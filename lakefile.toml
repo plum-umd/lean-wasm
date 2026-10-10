@@ -1,0 +1,13 @@
+name = "lean-wasm"
+version = "0.1.0"
+defaultTargets = ["Wasm", "WasmTests", "wast"]
+
+[[lean_lib]]
+name = "Wasm"
+
+[[lean_lib]]
+name = "WasmTests"
+
+[[lean_exe]]
+name = "wast"
+root = "WastMain"
