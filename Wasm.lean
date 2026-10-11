@@ -1,3 +1,4 @@
+import Wasm.Fast
 import Wasm.VectorStepper
 import Wasm.Binary.Decode
 import Wasm.Syntax

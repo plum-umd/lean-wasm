@@ -54,6 +54,83 @@ Call-stack exhaustion can satisfy `assert_exhaustion`; running out of fuel is a 
 Allocation budgets are embedder resource policy, separate from static validation.
 Exit codes are **0** for complete success, **1** for failures, and **2** for unsupported coverage.
 
+## Array-backed certified executor
+
+`import Wasm.Fast` exposes a separate executor with `Array StructInst` storage. The
+specification store and reduction rules remain the correctness specification. All instruction
+families supported by the original certified `runConfiguration` have fast counterparts,
+including mutable structs; other store components retain their existing representations.
+
+```lean
+import Wasm.Fast
+
+def executeFast (fuel : Nat) (input : Wasm.Configuration) : Wasm.Configuration :=
+  let result := Wasm.Fast.runConfiguration fuel (Wasm.Fast.Configuration.ofSpec input)
+  result.state.toSpec
+```
+
+Convert once at entry and once at exit. When resuming after fuel exhaustion, retain the
+`Wasm.Fast.Configuration` and pass it directly to the next run. Conversion traverses the
+struct heap and should not be performed between instructions.
+
+`Wasm.Fast.Store.Rel` relates stores by equality after decoding: the fast array's `toList`
+equals the specification list, and every other component agrees. Allocation, lookup, mutation,
+and runtime reference typing have kernel-checked correspondence lemmas.
+`Wasm.Fast.stepConfiguration_spec` maps each successful fast transition to one original
+`Wasm.ConfigStep`; `Wasm.Fast.runConfiguration_spec` maps execution to `Wasm.ConfigSteps`.
+These proofs use only Lean's standard axioms, with no `sorry` or new axioms. The stronger
+claim that both executors always return exactly the same optional step and run status is
+covered by differential regression tests, rather than a general equality theorem.
+
+Allocation uses array `push` and lookup uses array indexing. Struct scanning returns a planned
+update, applied after dispatch and the fuel runner choose that step, so retaining the input
+during fallback does not force an array copy on every allocation. A checked equality connects
+the runner's deferred step plan to the fast single-step dispatcher. Lean arrays can still copy when a caller retains
+an earlier heap snapshot. Struct fields and the GC array-instance heap remain lists.
+The nested administrative instruction traversal remains unchanged; an explicit execution
+stack is the next phase, after measuring this change. The `wast` CLI continues to use its
+existing backend, whose broader coverage exceeds the certified configuration executor.
+
+The default build runs differential tests over complete configurations and statuses, several
+fuel limits, resumed execution, heap boundaries, and instruction-family fixtures. Measure
+compiled execution with:
+
+```sh
+python3 tests/benchmark-fast.py
+# A shorter run:
+python3 tests/benchmark-fast.py --sizes 1000 4000 --repeat 3
+```
+
+The harness alternates backends, discards warm-up samples, and records individual timings,
+medians, spread, machine/toolchain metadata, and boundary-conversion costs in
+`.cache/benchmarks/`. Workloads cover primitive allocation and lookup, complete allocation
+loops, allocation plus reads, linked structures with function calls and casts, fixed heaps
+with early/middle/late reads, and a control-only baseline. Code size stays constant as heap
+size grows. Timers use IO evaluation barriers to prevent pure computation from moving across
+timer reads. These synthetic workloads require no external application checkout.
+
+Primitive heap cases time operations on prepared stores and report zero conversion costs.
+Their “end-to-end” column is therefore the operation ratio. Complete executor cases measure
+both configuration conversions separately and include them in the end-to-end ratio.
+
+[Recorded measurements](benchmarks/array-heap/summary.md) on an Apple M1 use seven samples
+per case, five sizes from 1,000 to 16,000, and all eleven workloads. At 16,000 structs:
+
+| Complete workload | Original ms | Fast ms | Speedup including conversions |
+| --- | ---: | ---: | ---: |
+| Allocation | 2,839.9 | 114.7 | 24.73× |
+| Allocation and reads | 3,925.7 | 125.8 | 31.18× |
+| Linked structures, calls and casts | 7,659.2 | 446.9 | 17.13× |
+| Late-address reads | 847.3 | 112.3 | 7.53× |
+| Control only | 130.2 | 129.3 | 1.01× |
+
+Early-address executor reads are about 1% slower. The fast allocation loop scales from 7.2 ms
+at 1,000 structs to 114.7 ms at 16,000, consistent with linear growth over these sizes.
+These are synthetic executor measurements; they establish heap scaling and do not predict
+an application's speedup. The recorded directory includes raw samples, metadata and source
+hashes. Validation passed `lake build` (including fast differential tests) and all 257 scripts /
+65,202 commands of the unchanged backend's pinned conformance suite.
+
 ## Implemented features
 
 - Scalar integer and floating-point instructions, conversions, and bit-preserving values.

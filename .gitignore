@@ -3,3 +3,6 @@
 
 # Pinned upstream conformance checkout fetched by tests/setup-testsuite.sh
 .cache/testsuite/
+
+# Local executor benchmark runs
+.cache/benchmarks/

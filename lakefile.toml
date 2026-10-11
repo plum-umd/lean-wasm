@@ -11,3 +11,7 @@ name = "WasmTests"
 [[lean_exe]]
 name = "wast"
 root = "WastMain"
+
+[[lean_exe]]
+name = "wasm-bench"
+root = "BenchMain"
