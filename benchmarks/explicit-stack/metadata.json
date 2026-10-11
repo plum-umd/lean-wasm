@@ -1,0 +1,281 @@
+{
+  "timestamp_utc": "2026-10-11T19:02:18.339804+00:00",
+  "revision": "318d3d008ff42181fe3545b3e00289aa2e437282",
+  "working_tree": "M README.md\n M Wasm/Fast.lean\n M Wasm/Fast/Tests.lean\n M lakefile.toml\n?? StackBenchMain.lean\n?? Wasm/Fast/DepthWorkloads.lean\n?? Wasm/Fast/Machine.lean\n?? Wasm/Fast/MachineDispatch.lean\n?? Wasm/Fast/MachineExecution.lean\n?? tests/benchmark-stack.py",
+  "toolchain": "Lean (version 4.27.0, arm64-apple-darwin24.6.0, commit db93fe1608548721853390a10cd40580fe7d22ae, Release)",
+  "hardware": "Apple M1",
+  "platform": "macOS-15.7.3-arm64-i386-64bit-Mach-O",
+  "repeat": 7,
+  "cases": [
+    [
+      "allocate",
+      1000,
+      0
+    ],
+    [
+      "allocate",
+      4000,
+      0
+    ],
+    [
+      "allocate",
+      16000,
+      0
+    ],
+    [
+      "allocate-read",
+      1000,
+      0
+    ],
+    [
+      "allocate-read",
+      4000,
+      0
+    ],
+    [
+      "allocate-read",
+      16000,
+      0
+    ],
+    [
+      "linked",
+      1000,
+      0
+    ],
+    [
+      "linked",
+      4000,
+      0
+    ],
+    [
+      "linked",
+      16000,
+      0
+    ],
+    [
+      "read-early",
+      1000,
+      0
+    ],
+    [
+      "read-early",
+      4000,
+      0
+    ],
+    [
+      "read-early",
+      16000,
+      0
+    ],
+    [
+      "read-middle",
+      1000,
+      0
+    ],
+    [
+      "read-middle",
+      4000,
+      0
+    ],
+    [
+      "read-middle",
+      16000,
+      0
+    ],
+    [
+      "read-late",
+      1000,
+      0
+    ],
+    [
+      "read-late",
+      4000,
+      0
+    ],
+    [
+      "read-late",
+      16000,
+      0
+    ],
+    [
+      "control",
+      1000,
+      0
+    ],
+    [
+      "control",
+      4000,
+      0
+    ],
+    [
+      "control",
+      16000,
+      0
+    ],
+    [
+      "blocks",
+      1000,
+      0
+    ],
+    [
+      "blocks",
+      1000,
+      4
+    ],
+    [
+      "blocks",
+      1000,
+      16
+    ],
+    [
+      "blocks",
+      1000,
+      64
+    ],
+    [
+      "blocks",
+      1000,
+      256
+    ],
+    [
+      "calls",
+      1000,
+      0
+    ],
+    [
+      "calls",
+      1000,
+      4
+    ],
+    [
+      "calls",
+      1000,
+      16
+    ],
+    [
+      "calls",
+      1000,
+      64
+    ],
+    [
+      "calls",
+      1000,
+      256
+    ],
+    [
+      "tail-calls",
+      1000,
+      0
+    ],
+    [
+      "tail-calls",
+      1000,
+      4
+    ],
+    [
+      "tail-calls",
+      1000,
+      16
+    ],
+    [
+      "tail-calls",
+      1000,
+      64
+    ],
+    [
+      "tail-calls",
+      1000,
+      256
+    ],
+    [
+      "handlers",
+      1000,
+      0
+    ],
+    [
+      "handlers",
+      1000,
+      4
+    ],
+    [
+      "handlers",
+      1000,
+      16
+    ],
+    [
+      "handlers",
+      1000,
+      64
+    ],
+    [
+      "handlers",
+      1000,
+      256
+    ],
+    [
+      "unwind",
+      1000,
+      0
+    ],
+    [
+      "unwind",
+      1000,
+      4
+    ],
+    [
+      "unwind",
+      1000,
+      16
+    ],
+    [
+      "unwind",
+      1000,
+      64
+    ],
+    [
+      "unwind",
+      1000,
+      256
+    ]
+  ],
+  "warmups_per_backend_case": 1,
+  "fresh_process_per_sample": true,
+  "source_sha256": {
+    "StackBenchMain.lean": "709b079944677005f6e64c2ee84ae19cf066665235d7ba7fa4c76a9750319ed7",
+    "lakefile.toml": "81ec21911ca42e62a58a1ea7be7aba19594ee3b091b891fab06419806ba6bd05",
+    "tests/benchmark-stack.py": "f0c82e3fcc33cb5980597b181b81f850f8e1bd3a1792eceb7a083d7a2aba534b",
+    "Wasm/Fast/Arrays.lean": "64beeef901bff3e94d3437cf4b056cf502185c5252d3249b05ceb24e148f5701",
+    "Wasm/Fast/BulkMemory.lean": "9d2fb42d35283c4de45a6627473dfcb7d2016796897803db89fefab13f022734",
+    "Wasm/Fast/BulkMemoryStepper.lean": "00d201520383c058863f48da3c8631331367c1818e7f6cd8bff230cfe4dd90fc",
+    "Wasm/Fast/Calls.lean": "58dd452169434d3af0af2b467ca33fc6716d58cb229b0ec6c0f4330bb9273f5b",
+    "Wasm/Fast/Configuration.lean": "77cf60a0e8ab0849fb4cd2b284909db5d9439e6a61b9c850b31900e87bd76904",
+    "Wasm/Fast/Correspondence.lean": "c200e93cd30ae6848042c87290c8267af50736da872e46bce8c3330835151031",
+    "Wasm/Fast/DepthWorkloads.lean": "db036d7474778a31c638351543d8fe4d4b7f2684603a1308a1eb394ae30944b0",
+    "Wasm/Fast/Exceptions.lean": "8bf7f05512fc6509f38efd4edcc28ae269d05f6ca79b07d7a8471f1b625f2d07",
+    "Wasm/Fast/Globals.lean": "138f779877168b284a11c123fc6a434df8c2d5c679ac70c3cc1adf9d3ea95c80",
+    "Wasm/Fast/Machine.lean": "d418ffdde8b329e9eed8f913ec6f0ba9214aa87a9051da2a05c1d85ed0e2625c",
+    "Wasm/Fast/MachineDispatch.lean": "d124f23d0a56d0a86d75728e3ca38f353b6352e37c59ea931eefba7e48ee9d96",
+    "Wasm/Fast/MachineExecution.lean": "bece0855af5c4600f6b9f415e98a688ff60ccc2c177de738ce440dad0b5c9b7a",
+    "Wasm/Fast/Memory.lean": "c807c5dd9feaa2c0039442b1b434d02763cca2d25d2f5b9294968a4f9340c357",
+    "Wasm/Fast/MemoryStepper.lean": "7ec67623204e498175634b037ecab0e7a3784f2ae645e5ca33dbc2f251ec9209",
+    "Wasm/Fast/References.lean": "b183b6890047748c095220c501d71932b9d50ac3856561bf10597a0a3aee54bc",
+    "Wasm/Fast/Runtime.lean": "93dadf130cdd7b1dc2e36da37e987608d7a82cc86aa5a586c0113fa2484a58ef",
+    "Wasm/Fast/Store.lean": "32f2c8aaedbfddc20810d223039c6092a7c328685a738c257dbfebb7f5b8edb8",
+    "Wasm/Fast/Structures.lean": "4a2dc0d7a0f73febe58dd232addab7e761332e7152622ade43deee8675b0c70b",
+    "Wasm/Fast/TableStepper.lean": "1e54046dbf9b10b3277952d22dfa543e2b0902df415b32e1bff8cf35ffd0c0a3",
+    "Wasm/Fast/Tables.lean": "12c6f8671d85cb324daff05f3fd66ed88e914b154100717c37ab5e260344602c",
+    "Wasm/Fast/Tests.lean": "9c2bcad7d05e83a2de9885c3c2ac33d879cdd6f43aa86b361ae058fc8554dd35",
+    "Wasm/Fast/VectorStepper.lean": "d7b23cc5bb8c74bf0f45b75fe5178753864a2c1791f3dc1f3cfb2427c456267a",
+    "Wasm/Fast/Workloads.lean": "ce3ceff88e9d4f1761e3518f2c3ee488b3161dda29a161e02d2e9a055ed58bd6"
+  },
+  "post_measurement_formatting": [
+    {
+      "path": "Wasm/Fast/MachineDispatch.lean",
+      "original_sha256": "d124f23d0a56d0a86d75728e3ca38f353b6352e37c59ea931eefba7e48ee9d96",
+      "generated_c_sha256": "ec9837e804bec5e2d36abd5b227ceb7a5a095819ede76dca896a2be3dad44670",
+      "change": "Wrap the checkedExceptions result at 100 columns; no semantic change.",
+      "delivered_sha256": "526371946555848be0969868fa80ef3b029ca290783564192435d9a3ffd15738",
+      "generated_c_unchanged_verified": true
+    }
+  ]
+}

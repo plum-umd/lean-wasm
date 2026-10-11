@@ -15,3 +15,7 @@ root = "WastMain"
 [[lean_exe]]
 name = "wasm-bench"
 root = "BenchMain"
+
+[[lean_exe]]
+name = "wasm-stack-bench"
+root = "StackBenchMain"

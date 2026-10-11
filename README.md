@@ -87,8 +87,8 @@ update, applied after dispatch and the fuel runner choose that step, so retainin
 during fallback does not force an array copy on every allocation. A checked equality connects
 the runner's deferred step plan to the fast single-step dispatcher. Lean arrays can still copy when a caller retains
 an earlier heap snapshot. Struct fields and the GC array-instance heap remain lists.
-The nested administrative instruction traversal remains unchanged; an explicit execution
-stack is the next phase, after measuring this change. The `wast` CLI continues to use its
+The heap-only executor retains nested administrative instruction traversal. The explicit
+stack executor below removes that traversal from ordinary instruction dispatch. The `wast` CLI continues to use its
 existing backend, whose broader coverage exceeds the certified configuration executor.
 
 The default build runs differential tests over complete configurations and statuses, several
@@ -130,6 +130,62 @@ These are synthetic executor measurements; they establish heap scaling and do no
 an application's speedup. The recorded directory includes raw samples, metadata and source
 hashes. Validation passed `lake build` (including fast differential tests) and all 257 scripts /
 65,202 commands of the unchanged backend's pinned conformance suite.
+
+## Explicit execution stack
+
+`Wasm.Fast.Machine` keeps the current code, a top-first operand stack, the current frame
+(locals and module), and suspended labels, handlers, and calls. It retains the array heap.
+Entering administrative contexts and moving constants onto the stack preserve the decoded
+configuration exactly. Opcode dispatch selects one certified instruction family and supplies
+only its operand packet. Returns, branches, tail calls, traps, and exceptions inspect the
+immediate suspended context and unwind one specification step at a time.
+
+```lean
+import Wasm.Fast
+
+def executeMachine (fuel : Nat) (input : Wasm.Configuration) : Wasm.Configuration :=
+  let machine := Wasm.Fast.Machine.ofConfiguration (Wasm.Fast.Configuration.ofSpec input)
+  (Wasm.Fast.Machine.run fuel machine).state.toSpec
+```
+
+Retain the returned machine when resuming. `Machine.toConfiguration` reconstructs the nested
+fast configuration; `Machine.toSpec` additionally converts the heap. Reconstruction is used
+at boundaries and in erased proofs, never in the execution loop. Boundary events reconstruct
+one context only. The loop preserves deferred struct updates so allocation can consume the
+array without retaining an old snapshot.
+
+`Machine.normalize_same` proves the administrative moves preserve reconstruction; their
+strictly decreasing code-size measure proves termination and is erased at runtime.
+`Machine.step_spec` proves each successful semantic transition is one original `ConfigStep`.
+`Machine.run_spec` proves the complete reduction sequence, and `Machine.run_status_spec`
+proves finished values, traps, uncaught exceptions, and that exhausted runs can take another
+specification step. Administrative moves consume no fuel. These results use only standard
+Lean axioms. A general reverse simulation or no-new-stuck theorem remains unproved; tests
+compare optional steps, complete configurations, statuses, fuel boundaries and resumption.
+The instruction-family fixtures include multi-value branches, calls through handlers,
+tail calls, mutable structures, reference exceptions, memory, tables, globals, arrays and SIMD.
+
+Measure all three implementations with:
+
+```sh
+python3 tests/benchmark-stack.py --hardware 'Apple M1'
+```
+
+The harness measures heap workloads at 1,000, 4,000 and 16,000 iterations, and blocks,
+calls, tail calls, handlers and exception unwinding at depths 0, 4, 16, 64 and 256.
+Depth cases hold the leaf loop at 1,000 iterations. Each backend runs in a fresh process;
+order rotates and reverses, with one warm-up and seven recorded repetitions per case.
+Input/output conversion costs are separate. Results, raw samples, source hashes and metadata
+are recorded in [benchmarks/explicit-stack](benchmarks/explicit-stack/summary.md).
+
+The recorded Apple M1 run contains 966 samples. At 16,000 allocations the machine takes
+57.2 ms versus 115.9 ms for the heap-only executor: a further 2.02× gain, or 50.25× over the
+original including conversions. The control loop improves another 2.24×. At depth 256,
+1,000 iterations under blocks take 3.8 ms versus 444.9 ms with the heap-only executor;
+handlers take 3.8 ms versus 914.9 ms, and suspended calls take 4.1 ms versus 5,400.3 ms.
+Machine time stays nearly flat over the measured depths. Tail-call chains remain bounded
+in active depth and improve 2.88× at chain length 256. These synthetic depth cases isolate
+context traversal and should not be treated as application speedup predictions.
 
 ## Implemented features
 

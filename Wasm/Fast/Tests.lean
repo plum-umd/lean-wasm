@@ -1,3 +1,5 @@
+import Wasm.Fast.DepthWorkloads
+import Wasm.Fast.MachineExecution
 import Wasm.Fast.Workloads
 import Wasm.Text.Module
 import Wasm.Instantiation
@@ -8,18 +10,30 @@ namespace Wasm.Fast.Tests
 private def check (name : String) (ok : Bool) : IO Unit :=
   unless ok do throw (IO.userError s!"fast executor regression: {name}")
 
-private def agreement (name : String) (c : Wasm.Configuration) : IO Unit := do
+private def agreement (name : String) (c : Wasm.Configuration)
+    (budgets : List Nat := [0, 1, 2, 3, 5, 10, 40, 200, 10000])
+    (resumeFuel : Nat := 10000) : IO Unit := do
   let fast := Configuration.ofSpec c
   check (name ++ ": input roundtrip") (fast.toSpec == c)
-  for budget in [0, 1, 2, 3, 5, 10, 40, 200, 10000] do
+  for budget in budgets do
     let a := Wasm.runConfiguration budget c
     let b := runConfiguration budget fast
+    let machine := Machine.run budget (Machine.ofConfiguration fast)
+    check (name ++ s!": machine state/fuel {budget}") (a.state == machine.state.toSpec)
+    check (name ++ s!": machine status/fuel {budget}") (a.status == machine.status)
+    check (name ++ s!": machine optional step {budget}")
+      (Wasm.stepConfiguration a.state == (Machine.step machine.state).map Machine.toSpec)
+    let machineResumed := Machine.run resumeFuel machine.state
+    let baselineResumed := Wasm.runConfiguration resumeFuel a.state
+    check (name ++ s!": machine resume {budget}")
+      (machineResumed.state.toSpec == baselineResumed.state &&
+        machineResumed.status == baselineResumed.status)
     check (name ++ s!": state/fuel {budget}") (a.state == b.state.toSpec)
     check (name ++ s!": status/fuel {budget}") (a.status == b.status)
     check (name ++ s!": optional step {budget}")
       (Wasm.stepConfiguration a.state == (stepConfiguration b.state).map Configuration.toSpec)
-    let resumed := runConfiguration 10000 b.state
-    let expected := Wasm.runConfiguration 10000 a.state
+    let resumed := runConfiguration resumeFuel b.state
+    let expected := Wasm.runConfiguration resumeFuel a.state
     check (name ++ s!": resume {budget}")
       (resumed.state.toSpec == expected.state && resumed.status == expected.status)
 
@@ -84,6 +98,34 @@ private def fixtures : List (String × String × List Value) := [
       i32.const 0 v128.const i32x4 1 2 3 4 v128.store
       i32.const 0 v128.load v128.const i32x4 4 3 2 1 i32x4.add i32x4.extract_lane 0))",
     [.i32 5]),
+  ("multi-value branch", "(module
+    (func (export \"main\") (result i32 i64)
+      i32.const 11 i64.const 22
+      block $out (param i32 i64) (result i32 i64)
+        block (result i32 i64)
+          i32.const 7 i64.const 9 br $out
+        end unreachable
+      end))", [.i32 7, .i64 9]),
+  ("tail call through handler", "(module
+    (func $g (result i32) i32.const 42)
+    (func $f (result i32)
+      try_table
+        block return_call $g end
+      end i32.const 0)
+    (func (export \"main\") (result i32) call $f))", [.i32 42]),
+  ("rethrow caught reference", "(module (tag $e (param i32))
+    (func (export \"main\") (result i32)
+      block $out (result i32)
+        try_table (catch $e $out)
+          block $ref (result exnref)
+            try_table (catch_all_ref $ref) i32.const 42 throw $e end
+            unreachable
+          end throw_ref
+        end unreachable
+      end))", [.i32 42]),
+  ("global mutation", "(module (global $g (mut i32) (i32.const 0))
+    (func (export \"main\") (result i32)
+      i32.const 42 global.set $g global.get $g))", [.i32 42]),
   ("null trap", "(module (type $s (struct (field i32)))
     (func (export \"main\") (result i32) ref.null $s struct.get $s 0))", [])]
 
@@ -112,6 +154,14 @@ private def fixtures : List (String × String × List Value) := [
       let result := runConfiguration (Workloads.fuel kind n) (Configuration.ofSpec c)
       check s!"{kind}/{n}: expected result"
         (result.status == RunStatus.finished (Workloads.expected kind n))
+  for kind in DepthWorkloads.kinds do
+    for depth in [0, 1, 3, 10, 32] do
+      let c := DepthWorkloads.configuration kind 3 depth
+      agreement s!"depth/{kind}/{depth}" c
+      let result := Machine.run (DepthWorkloads.fuel 3 depth)
+        (Machine.ofConfiguration (Configuration.ofSpec c))
+      check s!"depth/{kind}/{depth}: expected result"
+        (result.status == DepthWorkloads.expected kind 3)
   for (name, source, expected) in fixtures do
     let c ← match prepare source with
       | .ok c => pure c
@@ -121,13 +171,87 @@ private def fixtures : List (String × String × List Value) := [
     check (name ++ ": expected result")
       (result.status ==
           if name == "null trap" then RunStatus.trapped else RunStatus.finished expected)
+  for operandDepth in [0, 1, 32, 128] do
+    let code := values ((List.range operandDepth).map fun n => .i64 (BitVec.ofNat 64 n)) ++
+      instructions [.const (.i64 7), .const (.i64 9), .binop .i64 .add]
+    agreement s!"operand-prefix/{operandDepth}" ⟨{}, {}, code⟩
   for code in ([[], [.instr .drop], [.instr (.structNew 0 false)],
       [.instr (.const (.ref (.struct_ ⟨999⟩))), .instr (.refTest false .struct_)],
-      [.instr (.call 0)], [.instr (.br 0)], [.instr .return_]] : List (List AdminInstr)) do
+      [.instr (.call 0)], [.instr (.br 0)], [.instr .return_],
+      [.instr (.const (.ref (.null .nofunc))), .invokeDefined ⟨[], 0⟩],
+      [.instr (.const (.ref (.null .nofunc))), .returnInvokeDefined ⟨[], 0⟩],
+      [.frame 0 {} (values [.i32 1])],
+      [.frame 1 {} (values [.i32 1] ++ instructions [.return_])],
+      [.handler [] [.trap]], [.frame 0 {} [.throwing ⟨999⟩]]] : List (List AdminInstr)) do
     agreement "invalid/terminal configuration" ⟨{}, {}, code⟩
+
+-- Exercise opcode routing and arity selection with both usable and malformed operands.
+#eval show IO Unit from do
+  let source := "(module
+    (type $s (struct (field (mut i32))))
+    (type $a (array (mut i32)))
+    (type $f (func (param i32) (result i32)))
+    (func $id (type $f) local.get 0)
+    (table 2 funcref) (elem (i32.const 0) $id)
+    (memory 0 0) (data \"abcd\")
+    (global $g (mut i32) (i32.const 0)) (tag $e (param i32))
+    (func (export \"main\") (result i32) i32.const 0))"
+  let base ← match prepare source with
+    | .ok c => pure c
+    | .error error => throw (IO.userError error)
+  let setup := instructions [.const (.i32 1), .structNew 0 false, .drop,
+    .const (.i32 2), .arrayOp (.new_ 1 true), .drop]
+  let initialized := Wasm.runConfiguration 10000 {base with code := setup}
+  let frame := {base.frame with locals := [some (.i32 0), some (.i64 0)]}
+  let stacks : List (List Value) := [[], [.i32 0], [.i32 1], [.i64 0],
+    [.ref (.null .any)], [.ref (.null .nofunc)], [.ref (.struct_ ⟨0⟩)],
+    [.ref (.func ⟨0⟩)], [.i32 0, .i32 42], [.i32 0, .i32 42, .i32 2],
+    [.ref (.struct_ ⟨0⟩), .i32 42], [.i32 7, .ref (.func ⟨0⟩)], [.v128 0, .v128 1]]
+  let ops : List Instr := [Instr.nop, Instr.unreachable, Instr.drop, Instr.select none,
+    Instr.binop .i32 .add, Instr.eqz .i32, Instr.intBinary .i32 .divU, Instr.intUnary .i32 .clz,
+    Instr.intRel .i32 .eq, Instr.intConvert .extendI32U,
+    Instr.localGet 0, Instr.localSet 0, Instr.localTee 0, Instr.localSet 999,
+    Instr.globalGet 0, Instr.globalSet 0, Instr.load .i32 0 ⟨0, 0⟩, Instr.store .i32 0 ⟨0, 0⟩,
+    Instr.memorySize 0, Instr.memoryGrow 0, Instr.memoryFill 0, Instr.memoryCopy 0 0,
+    Instr.memoryInit 0 0,
+    Instr.dataDrop 0, Instr.call 0, Instr.callRef 2, Instr.callIndirect 0 2, Instr.returnCall 0,
+    Instr.returnCallRef 2, Instr.returnCallIndirect 0 2, Instr.refNull .any, Instr.refFunc 0,
+    Instr.refIsNull,
+    Instr.gcReference .eq, Instr.gcReference .i31New, Instr.refAsNonNull,
+    Instr.refTest true (.typeIdx 0), Instr.refCast false (.typeIdx 0),
+    Instr.brOnNull 0, Instr.brOnNonNull 0, Instr.structNew 0 false, Instr.structNew 0 true,
+    Instr.structGet 0 0 none, Instr.structSet 0 0, Instr.arrayOp (.new_ 1 true),
+    Instr.arrayOp (.new_ 1 false), Instr.arrayOp (.newFixed 1 2), Instr.arrayOp .len,
+    Instr.arrayOp (.get 1 none), Instr.arrayOp (.set 1), Instr.tableGet 0, Instr.tableSet 0,
+    Instr.tableSize 0, Instr.tableGrow 0, Instr.tableFill 0, Instr.tableCopy 0 0,
+    Instr.tableInit 0 0,
+    Instr.elemDrop 0, Instr.throw_ 0, Instr.throwRef, Instr.return_, Instr.br 0, Instr.br 1,
+    Instr.brIf 0,
+    Instr.brTable [0, 1] 2, Instr.block (.val none) [Instr.nop], Instr.loop (.val none) [Instr.nop],
+    Instr.if_ (.val none) [Instr.nop] [Instr.unreachable],
+    Instr.tryTable (.val none) [] [Instr.nop],
+    Instr.vector {opcode := .i32x4_add}]
+  for op in ops do
+    for stack in stacks do
+      let body := values stack ++ [.instr op]
+      for code in [body, [.label 1 [] body],
+          [.frame 1 frame [.label 1 [] [.handler [.all 0 true] [.label 1 [] body]]]]] do
+        let c : Wasm.Configuration := ⟨initialized.state.store, frame, code⟩
+        let machine := Machine.ofConfiguration (Configuration.ofSpec c)
+        let name := s!"opcode-matrix/{repr op}/{stack.length}"
+        check (name ++ ": optional step")
+          (Wasm.stepConfiguration c == (Machine.step machine).map Machine.toSpec)
+        let expected := Wasm.runConfiguration 5 c
+        let actual := Machine.run 5 machine
+        check (name ++ ": five-step run")
+          (expected.state == actual.state.toSpec && expected.status == actual.status)
 
 #print axioms Wasm.Fast.Store.allocateStruct_toSpec
 #print axioms Wasm.Fast.stepConfiguration_spec
+#print axioms Wasm.Fast.Machine.step_spec
+#print axioms Wasm.Fast.Machine.normalize_same
+#print axioms Wasm.Fast.Machine.run_status_spec
+#print axioms Wasm.Fast.Machine.run_spec
 #print axioms Wasm.Fast.runConfiguration_spec
 
 end Wasm.Fast.Tests
