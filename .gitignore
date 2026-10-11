@@ -1,2 +1,5 @@
 # cache and other artifacts produced by Lean's Lake build tool
 .lake/
+
+# Pinned upstream conformance checkout fetched by tests/setup-testsuite.sh
+.cache/testsuite/

@@ -1,21 +1,29 @@
 # Upstream conformance scripts
 
-Unmodified files from https://github.com/WebAssembly/testsuite at revision
+This directory stores our revision, inventory, expected counts, and coverage documentation.
+Upstream fixtures are fetched from https://github.com/WebAssembly/testsuite into an ignored
+Git checkout by `../setup-testsuite.sh`. The exact commit is recorded in `revision`:
 `b464a4cd100d98175ae6e3890db89a2e6c8302f7`.
-The upstream Apache 2.0 license is included in `LICENSE`.
+The checkout includes the upstream Apache 2.0 license.
 
 Run from the project directory:
 
 ```sh
-lake exe wast tests/testsuite/i32.wast tests/testsuite/i64.wast
-lake exe wast --fuel 4000000 tests/testsuite/memory_fill.wast tests/testsuite/memory_copy.wast
-lake exe wast --fuel 4000000 --call-depth 256 tests/testsuite/call_ref.wast
+sh tests/setup-testsuite.sh
+lake exe wast .cache/testsuite/i32.wast .cache/testsuite/i64.wast
+lake exe wast --fuel 4000000 .cache/testsuite/memory_fill.wast .cache/testsuite/memory_copy.wast
+lake exe wast --fuel 4000000 --call-depth 256 .cache/testsuite/call_ref.wast
 sh tests/check-wast.sh --full
 ```
 
+Use `sh tests/setup-testsuite.sh DIRECTORY` to fetch into another location, and
+`sh tests/check-wast.sh --full --testsuite DIRECTORY` to run against that checkout.
+Existing checkouts must be clean and at the recorded revision; setup does not replace or
+reset another checkout. Once fetched, regression runs do not require network access.
+
 The regression covers **all 257 top-level scripts**: **65,202 passed commands,
 0 failed, 0 unsupported**. This includes 191 non-SIMD scripts, 59 standard SIMD scripts,
-and 7 relaxed SIMD scripts. Every vendored fixture is byte-identical to the pinned archive.
+and 7 relaxed SIMD scripts. The harness requires a clean checkout at the recorded revision.
 Proposal, legacy, and custom subdirectory suites are outside this inventory.
 
 `inventory.tsv` records every script, its family, and complete/pending status. Passing scripts
@@ -308,7 +316,7 @@ Focused fixtures in `../` cover bottom typing, quoted and binary modules, indepe
 module definitions/instances, repeated starts, generative/shared resources, typed imports,
 reference traps/branches, nonnullable local initialization, and depth versus fuel exhaustion.
 `instance.wast` now passes completely, including generative and shared tag identities.
-Upstream fixtures remain unmodified.
+Upstream fixtures remain unmodified in the separate checkout.
 
 Successful executable validation has a separate kernel-checked soundness theorem.
 The plain boolean heap/type algorithms also have separate success-soundness proofs.

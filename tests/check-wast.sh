@@ -1,8 +1,51 @@
 #!/bin/sh
 # End-to-end regression against the pinned, unmodified upstream scripts.
 set -eu
-mode=${1:-regression}
-case "$mode" in regression|--full) ;; *) echo "usage: sh tests/check-wast.sh [--full]"; exit 1 ;; esac
+caller_dir=$(pwd)
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$project_dir"
+mode=regression
+testsuite_dir="$project_dir/.cache/testsuite"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --full) mode=--full; shift ;;
+    --testsuite)
+      [ "$#" -ge 2 ] || { echo "--testsuite requires a directory" >&2; exit 1; }
+      testsuite_dir=$2
+      shift 2 ;;
+    *) echo "usage: sh tests/check-wast.sh [--full] [--testsuite DIRECTORY]" >&2; exit 1 ;;
+  esac
+done
+case "$testsuite_dir" in /*) ;; *) testsuite_dir="$caller_dir/$testsuite_dir" ;; esac
+[ -d "$testsuite_dir" ] || {
+  echo "testsuite missing; run: sh tests/setup-testsuite.sh" >&2
+  exit 1
+}
+revision=$(cat tests/testsuite/revision)
+[ "$(git -C "$testsuite_dir" rev-parse HEAD)" = "$revision" ] || {
+  echo "testsuite revision differs from tests/testsuite/revision" >&2
+  exit 1
+}
+[ -z "$(git -C "$testsuite_dir" status --porcelain)" ] || {
+  echo "testsuite checkout has local changes" >&2
+  exit 1
+}
+# Only top-level scripts belong to this inventory; upstream also has proposal subdirectories.
+expected_files=$(awk '!/^#/ && NF {print $1}' tests/testsuite/expected-broader.txt | sort)
+actual_files=$(for fixture in "$testsuite_dir"/*.wast; do
+  [ -f "$fixture" ] || continue
+  basename "$fixture"
+done | sort)
+inventory_files=$(awk '!/^#/ && NF {print $1}' tests/testsuite/inventory.tsv | sort)
+[ "$actual_files" = "$inventory_files" ] || {
+  echo "upstream top-level scripts differ from the recorded inventory" >&2
+  exit 1
+}
+completed_files=$(awk '!/^#/ && $3 == "complete" {print $1}' tests/testsuite/inventory.tsv | sort)
+[ "$expected_files" = "$completed_files" ] || {
+  echo "passing regression manifest differs from completed inventory" >&2
+  exit 1
+}
 lake build wast
 vectors=$(.lake/build/bin/wast tests/vectors.wast)
 printf '%s\n' "$vectors" | rg -q '^tests/vectors.wast: 8 passed, 0 failed, 0 unsupported$'
@@ -64,29 +107,13 @@ expected_prints='42 : i32
 99 : i32'
 actual_prints=$(printf '%s\n' "$spectest" | rg ' : (i32|i64|f32|f64)$')
 [ "$actual_prints" = "$expected_prints" ]
-# Every vendored upstream script is listed, including its resource limit.
-expected_files=$(awk '!/^#/ && NF {print "tests/testsuite/" $1}' \
-  tests/testsuite/expected-broader.txt | sort)
-actual_files=$(rg --files tests/testsuite -g '*.wast' | sort)
-inventory_files=$(awk '!/^#/ && NF {print "tests/testsuite/" $1}' \
-  tests/testsuite/inventory.tsv | sort)
-[ "$actual_files" = "$inventory_files" ] || {
-  echo "upstream inventory differs from vendored files"
-  exit 1
-}
-completed_files=$(awk '!/^#/ && $3 == "complete" {print "tests/testsuite/" $1}' \
-  tests/testsuite/inventory.tsv | sort)
-[ "$expected_files" = "$completed_files" ] || {
-  echo "passing regression manifest differs from completed inventory"
-  exit 1
-}
 while IFS=' ' read -r file passed failed unsupported call_depth script_fuel; do
   case "$file" in ''|'#'*) continue ;; esac
   [ "$failed" -eq 0 ] || { echo "failure baseline forbidden for $file"; exit 1; }
   [ "$unsupported" -eq 0 ] || { echo "unsupported baseline forbidden for $file"; exit 1; }
   status=0
   output=$(.lake/build/bin/wast --fuel "${script_fuel:-4000000}" --call-depth "$call_depth" \
-    "tests/testsuite/$file") || status=$?
+    "$testsuite_dir/$file") || status=$?
   expected_status=0
   [ "$status" -eq "$expected_status" ] || {
     printf '%s\n' "$output"
@@ -95,7 +122,7 @@ while IFS=' ' read -r file passed failed unsupported call_depth script_fuel; do
   }
   printf '%s\n' "$output"
   printf '%s\n' "$output" | rg -q -F -x \
-    "tests/testsuite/$file: $passed passed, 0 failed, $unsupported unsupported"
+    "$testsuite_dir/$file: $passed passed, 0 failed, $unsupported unsupported"
 done < tests/testsuite/expected-broader.txt
 
 if [ "$mode" = --full ]; then
@@ -104,7 +131,7 @@ if [ "$mode" = --full ]; then
     case "$file" in ''|'#'*) continue ;; esac
     [ "$coverage" != complete ] || continue
     status=0
-    .lake/build/bin/wast --fuel 4000000 --call-depth 256 "tests/testsuite/$file" || status=$?
+    .lake/build/bin/wast --fuel 4000000 --call-depth 256 "$testsuite_dir/$file" || status=$?
     case "$status" in
       0) ;;
       2) [ "$full_status" -ne 0 ] || full_status=2 ;;
