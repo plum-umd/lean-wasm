@@ -58,6 +58,26 @@ structure ElemInst where
   nullable : Bool := true
   deriving DecidableEq, Repr
 
+structure TagInst where
+  type : FuncType
+  definedType : Types.DefinedType
+  deriving DecidableEq, Repr
+
+structure ExnInst where
+  tag : TagAddr
+  fields : List Value
+  deriving DecidableEq, Repr
+
+structure StructInst where
+  type : Types.DefinedType
+  fields : List Value
+  deriving DecidableEq, Repr
+
+structure ArrayInst where
+  type : Types.DefinedType
+  fields : Array Value
+  deriving DecidableEq, Repr
+
 /-- Store projection for the supported instances, with separate address spaces. -/
 structure Store where
   funcs : List FuncInst := []
@@ -66,7 +86,13 @@ structure Store where
   datas : List DataInst := []
   tables : List TableInst := []
   elems : List ElemInst := []
+  tags : List TagInst := []
+  exns : List ExnInst := []
+  structs : List StructInst := []
+  arrays : List ArrayInst := []
   deriving BEq, Repr
+
+def gcAllocationBudget : Nat := 1048576
 
 /-- Parameters and locals retain static local-index order, rather than operand-stack order. -/
 def ValType.defaultable : ValType → Bool
@@ -79,6 +105,7 @@ def Value.default (t : ValType) : Option Value :=
   | .i64 => some (.i64 0)
   | .f32 => some (.f32 0)
   | .f64 => some (.f64 0)
+  | .v128 => some (.v128 0)
   | .ref kind => some (.ref (.null kind))
   | .refNonNull _ => none
 
@@ -139,11 +166,12 @@ def ModuleInst.Valid (store : Store) (module : ModuleInst) : Prop :=
     | .func address => address ∈ module.funcs
     | .global address => address ∈ module.globals
     | .memory address => address ∈ module.mems
-    | .table address => address ∈ module.tables)
+    | .table address => address ∈ module.tables
+    | .tag address => address ∈ module.tags)
 
 def FuncInst.SignatureValid (function : FuncInst) : Prop :=
   match function.code with
-  | .wasm code => function.module.types[code.typeIdx]? = some function.type
+  | .wasm code => function.module.types.func? (code.typeIdx) = some function.type
   | .host _ => True
   | .hostTyped _ type => type.expand? = some (Types.embedFunc function.type) ∧ type.closed
 
@@ -162,10 +190,24 @@ def FuncInst.runtimeType (function : FuncInst) : Types.DefinedType :=
 def RefValue.type? (store : Store) : RefValue → Option ValType
   | .func address => (store.func? address).map fun function =>
       .refNonNull function.runtimeType.heap
-  | .extern _ => some (.refNonNull .extern)
+  | .struct_ address => (store.structs[address.index]?).map fun object =>
+      .refNonNull object.type.heap
+  | .array address => (store.arrays[address.index]?).map fun object =>
+      .refNonNull object.type.heap
+  | .exn _ => some (.refNonNull .exn)
+  | .extern _ | .external _ => some (.refNonNull .extern)
+  | .i31 _ => some (.refNonNull .i31)
+  | .host _ => some (.refNonNull .any)
   | .null heap => match heap with
-    | .func | .nofunc | .defined _ _ => some (.ref .nofunc)
+    | .func | .nofunc => some (.ref .nofunc)
+    | .defined group index =>
+      match (Types.DefinedType.mk group index).expandComposite? with
+      | some (.func _) => some (.ref .nofunc)
+      | some (.struct_ _) | some (.array _) => some (.ref .none)
+      | none => none
     | .extern | .noextern => some (.ref .noextern)
+    | .exn | .noexn => some (.ref .noexn)
+    | .any | .eq | .i31 | .struct_ | .array | .none => some (.ref .none)
     | _ => none
 
 def Value.type? (store : Store) : Value → Option ValType
@@ -173,6 +215,7 @@ def Value.type? (store : Store) : Value → Option ValType
   | .i64 _ => some .i64
   | .f32 _ => some .f32
   | .f64 _ => some .f64
+  | .v128 _ => some .v128
   | .ref reference => reference.type? store
 
 abbrev Typed (store : Store) (value : Value) (type : ValType) : Prop :=
@@ -240,14 +283,15 @@ def TableInst.ReferencesValid (store : Store) (table : TableInst) : Prop :=
 def ElemInst.ReferencesValid (store : Store) (elem : ElemInst) : Prop :=
   ∀ reference ∈ elem.refs.toList, Typed store (.ref reference) elem.refType
 
-theorem Typed.store_funcs (h : Typed store value type) (same : next.funcs = store.funcs) :
+theorem Typed.store_funcs (h : Typed store value type) (same : next.funcs = store.funcs)
+    (sameStructs : next.structs = store.structs) (sameArrays : next.arrays = store.arrays) :
     Typed next value type := by
   obtain ⟨actual, found, matched⟩ := h
   refine ⟨actual, ?_, matched⟩
   cases value with
-  | i32 _ | i64 _ | f32 _ | f64 _ => exact found
+  | i32 _ | i64 _ | f32 _ | f64 _ | v128 _ => exact found
   | ref reference =>
-    cases reference <;> simpa [Value.type?, RefValue.type?, Store.func?, same] using found
+    cases reference <;> simpa [Value.type?, RefValue.type?, Store.func?, same, sameStructs, sameArrays] using found
 
 /-- Prepare an activation using store-dependent argument typing and optional local defaults. -/
 def FuncInst.activation? (function : FuncInst) (args : List Value)
@@ -255,7 +299,7 @@ def FuncInst.activation? (function : FuncInst) (args : List Value)
   match function.code with
   | .host _ | .hostTyped _ _ => none
   | .wasm code =>
-    if function.module.types[code.typeIdx]? = some function.type then
+    if function.module.types.func? (code.typeIdx) = some function.type then
       match checkArgs store args function.type.params with
       | none => none
       | some _ =>
@@ -265,7 +309,7 @@ def FuncInst.activation? (function : FuncInst) (args : List Value)
     else none
 
 inductive Invokes (store : Store) : FuncInst → List Value → AdminInstr → Prop where
-  | wasm (hs : module.types[code.typeIdx]? = some type)
+  | wasm (hs : module.types.func? (code.typeIdx) = some type)
       (ha : ArgsTyped store args type.params) :
       Invokes store ⟨type, module, .wasm code⟩ args
         (.frame type.results.length (Frame.initialize module args code.locals)

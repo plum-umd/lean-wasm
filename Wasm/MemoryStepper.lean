@@ -83,6 +83,11 @@ def checkedMemoryStep (store : Store) (state : Frame) (es : List AdminInstr) :
       (checkedMemoryStep store state body).map fun next =>
         ⟨(next.val.1, [.label n continuation next.val.2]), .label next.property⟩
     simpa [values] using memoryContext [] tail inner
+  | .handler catches body :: tail =>
+    let inner : CheckedMemoryStep store state [.handler catches body] :=
+      (checkedMemoryStep store state body).map fun next =>
+        ⟨(next.val.1, [.handler catches next.val.2]), .handler next.property⟩
+    simpa [values] using memoryContext [] tail inner
   | .frame n frame body :: tail =>
     let inner : CheckedMemoryStep store state [.frame n frame body] :=
       (checkedMemoryStep store frame body).map fun next =>

@@ -54,6 +54,8 @@ inductive GlobalStep : Store → Frame → List AdminInstr → Store → List Ad
       GlobalStep store state (values vs ++ es ++ tail) store' (values vs ++ es' ++ tail)
   | label : GlobalStep store state body store' body' →
       GlobalStep store state [.label n continuation body] store' [.label n continuation body']
+  | handler : GlobalStep store state body store' body' →
+      GlobalStep store state [.handler catches body] store' [.handler catches body']
   | frame : GlobalStep store inner body store' body' →
       GlobalStep store state [.frame n inner body] store' [.frame n inner body']
 
@@ -97,6 +99,11 @@ def checkedGlobalStep (store : Store) (state : Frame) (es : List AdminInstr) :
       (checkedGlobalStep store state body).map fun next =>
         ⟨(next.val.1, [.label n continuation next.val.2]), .label next.property⟩
     simpa [values] using globalContext [] tail inner
+  | .handler catches body :: tail =>
+    let inner : CheckedGlobalStep store state [.handler catches body] :=
+      (checkedGlobalStep store state body).map fun next =>
+        ⟨(next.val.1, [.handler catches next.val.2]), .handler next.property⟩
+    simpa [values] using globalContext [] tail inner
   | .frame n frame body :: tail =>
     let inner : CheckedGlobalStep store state [.frame n frame body] :=
       (checkedGlobalStep store frame body).map fun next =>
@@ -121,26 +128,26 @@ theorem GlobalStep.functions_preserved (h : GlobalStep store state es store' es'
     store'.funcs = store.funcs := by
   induction h with
   | get | set => rfl
-  | context _ ih | label _ ih | frame _ ih => exact ih
+  | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
 
 theorem GlobalStep.length_preserved (h : GlobalStep store state es store' es') :
     store'.globals.length = store.globals.length := by
   induction h with
   | get => rfl
   | set => simp [Store.setGlobal]
-  | context _ ih | label _ ih | frame _ ih => exact ih
+  | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
 
 theorem GlobalStep.types_preserved (h : GlobalStep store state es store' es') :
     store'.globals.map GlobalInst.type = store.globals.map GlobalInst.type := by
   induction h with
   | get => rfl
   | set _ hg _ => exact Store.setGlobal_types _ _ _ _ hg
-  | context _ ih | label _ ih | frame _ ih => exact ih
+  | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
 
 theorem GlobalInst.valid_set {store : Store} {global : GlobalInst} {value : Value}
     {address : GlobalAddr} (h : Typed store value global.type.valType) :
     ({ global with value } : GlobalInst).Valid
       (store.setGlobal address { global with value }) :=
-  h.store_funcs rfl
+  h.store_funcs rfl rfl rfl
 
 end Wasm

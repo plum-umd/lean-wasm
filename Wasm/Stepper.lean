@@ -187,11 +187,18 @@ private def scan (types : TypeContext) (es : List AdminInstr) (stack : List Valu
             omega))⟩
   | .label n continuation body :: tail =>
     simpa using inContext stack tail (labelStep types n continuation body (scan types body []))
+  | .handler catches body :: tail =>
+    let inner : CheckedStep types [.handler catches body] :=
+      (scan types body []).map fun next =>
+        ⟨[.handler catches next.val], .handler (by simpa [values] using next.property)⟩
+    simpa using inContext stack tail inner
   | .frame n state body :: tail =>
     simpa using inContext stack tail
       (frameStep types n state body (scan state.module.types body []))
   | .invoke _ _ :: _ | .castFunc _ :: _ | .invokeRef _ :: _
-  | .castDefined _ :: _ | .invokeDefined _ :: _ => exact none
+  | .castDefined _ :: _ | .invokeDefined _ :: _
+  | .returnInvoke _ _ :: _ | .returnInvokeRef _ :: _ | .returnInvokeDefined _ :: _
+  | .tailActivation _ :: _ | .throwing _ :: _ => exact none
 termination_by sizeOf es
 decreasing_by all_goals simp_wf; omega
 
@@ -212,6 +219,7 @@ inductive StepOutcome where
   | next (code : List AdminInstr)
   | finished (results : List Value)
   | trapped
+  | exception (address : ExnAddr)
   | stuck
   deriving BEq, Repr
 
@@ -225,6 +233,7 @@ def stepOutcome (types : TypeContext) (es : List AdminInstr) : StepOutcome :=
     | [] => .finished p.stack
     | _ => match es with
       | [.trap] => .trapped
+      | [.throwing address] => .exception address
       | _ => .stuck
 
 theorem stepOutcome_finished (h : stepOutcome types es = .finished vs) : es = values vs := by
@@ -250,6 +259,7 @@ theorem stepOutcome_trapped (h : stepOutcome types es = .trapped) : es = [.trap]
       split at h
       · rfl
       · cases h
+      · cases h
 
 private def checkedRun (types : TypeContext) : (fuel : Nat) → (es : List AdminInstr) →
     { final : List AdminInstr // ExecSteps types es final }
@@ -264,8 +274,11 @@ private def checkedRun (types : TypeContext) : (fuel : Nat) → (es : List Admin
 inductive RunStatus where
   | finished (results : List Value)
   | trapped
+  | exception (address : ExnAddr)
   | stuck
   | exhausted
+  /-- Native execution stopped before exceeding its function activation limit. -/
+  | callStackExhausted
   deriving BEq, Repr
 
 structure RunResult where
@@ -279,6 +292,7 @@ def run (fuel : Nat) (types : TypeContext) (es : List AdminInstr) : RunResult :=
   let status := match stepOutcome types result.val with
     | .finished vs => RunStatus.finished vs
     | .trapped => .trapped
+    | .exception address => .exception address
     | .stuck => .stuck
     | .next _ => .exhausted
   ⟨result.val, status⟩
@@ -297,6 +311,7 @@ theorem run_finished (h : (run fuel types es).status = .finished vs) :
   · cases h
   · cases h
   · cases h
+  · cases h
 
 theorem run_trapped (h : (run fuel types es).status = .trapped) :
     (run fuel types es).state = [.trap] := by
@@ -306,6 +321,7 @@ theorem run_trapped (h : (run fuel types es).status = .trapped) :
   · cases h
   · rename_i hs
     exact stepOutcome_trapped hs
+  · cases h
   · cases h
   · cases h
 

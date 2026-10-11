@@ -132,7 +132,7 @@ example : ¬ (Func.mk 0 [.refNonNull .func]
   by decide
 example : (Func.mk 0 [] [.localGet 0, .drop]).Initialized ⟨[.refNonNull .func], []⟩ := by decide
 
-example : ¬ FuncTyping [⟨[], []⟩] [] [] [] 0
+example : ¬ FuncTyping [.func ⟨[], []⟩] [] [] [] 0
     ⟨0, [.refNonNull .func], [.localGet 0, .drop]⟩ ⟨[], []⟩ := by
   intro h
   have initialized := h.initialized
@@ -187,8 +187,7 @@ private theorem groups_valid :
       constructor
       · rfl
       · decide
-      · simp [Types.SubType.body, Types.ValType.Valid]
-      · simp [Types.SubType.body, Types.ValType.Valid]
+      · simp [Types.SubType.body, Types.CompType.valTypes, Types.ValType.Valid]
       · simp [Types.SubType.supers]
     | succ i => simp [parentGroup] at lookup
   · apply Types.TypeSectionValid.cons (resolved := [child])
@@ -208,13 +207,12 @@ private theorem groups_valid :
         constructor
         · rfl
         · decide
-        · simp [Types.SubType.body, Types.ValType.Valid]
-        · simp [Types.SubType.body, Types.ValType.Valid]
+        · simp [Types.SubType.body, Types.CompType.valTypes, Types.ValType.Valid]
         · intro super member
           simp [Types.SubType.supers] at member
           subst super
           exact ⟨0, parent, .func false [] [.i32] [.i32], rfl, by decide, rfl, rfl, rfl,
-            ⟨.cons .i32 .nil, .cons .i32 .nil⟩⟩
+             .func ⟨.cons .i32 .nil, .cons .i32 .nil⟩⟩
       | succ i => simp [childGroup] at lookup
     · exact .nil
 
@@ -248,7 +246,7 @@ private theorem source_initializer (ctx : FunctionContext)
 private theorem source_valid : sourceModule.Valid := by
   refine ⟨sourceContext, ?_⟩
   constructor
-  · simp [sourceModule, sourceContext, Module.context?, Module.importedFuncIndices,
+  · simp [sourceModule, sourceContext, Module.context?, TypeContext.func?, CompositeType.func?, Module.importedFuncIndices, Module.importedTagIndices,
       Module.importedGlobals, Module.importedMemories, Module.importedTables,
       Module.declaredRefs, expressionFuncIndices, Elem.refType, Types.resolveSection?,
       Types.RecType.resolve?, Types.RecType.roll, parentGroup, childGroup, parent, child,
@@ -310,7 +308,7 @@ private theorem source_valid : sourceModule.Valid := by
   · intro _
     refine ⟨groups_valid, ?_⟩
     simp [sourceModule, parentGroup, childGroup, signature, Types.SubType.body,
-      Types.embedFunc, Types.embedVal]
+      Types.embedComposite, Types.embedFunc, Types.embedVal]
   · decide
 
 #eval do
@@ -332,7 +330,7 @@ private theorem source_valid : sourceModule.Valid := by
     instructions [.const (.i32 9), .const (.i32 0), .callIndirect 0 0]⟩
   check "instantiated typed indirect call"
     ((runConfiguration 30 indirect).status ≟ .finished [.i32 10])
-  let nullOwner := { owner with types := [⟨[], []⟩] }
+  let nullOwner := { owner with types := [.func ⟨[], []⟩] }
   let typedNull := stepReferences store { module := nullOwner }
     (instructions [.refNull (.typeIdx 0)])
   check "ref.null resolves source type index"

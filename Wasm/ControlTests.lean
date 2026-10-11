@@ -9,13 +9,13 @@ open AdminInstr Instr
 private def emptyBlock : BlockType := .val none
 
 -- Multi-value block entry moves just the parameters inside the label.
-example : ControlReduces [⟨[.i32, .i64], [.i32]⟩]
+example : ControlReduces [.func ⟨[.i32, .i64], [.i32]⟩]
     (values [.i32 3, .i64 7] ++ [instr (.block (.typeIdx 0) [.drop])])
     [.label 1 [] (values [.i32 3, .i64 7] ++ instructions [.drop])] :=
   .block (ft := ⟨[.i32, .i64], [.i32]⟩) rfl rfl
 
 -- Loop branch arity is its parameter count, even when result count differs.
-example : ControlReduces [⟨[.i32], [.i32, .i64]⟩]
+example : ControlReduces [.func ⟨[.i32], [.i32, .i64]⟩]
     (values [.i32 3] ++ [instr (.loop (.typeIdx 0) [])])
     [.label 1 [.loop (.typeIdx 0) []] (values [.i32 3])] :=
   .loop (ft := ⟨[.i32], [.i32, .i64]⟩) rfl rfl
@@ -92,7 +92,7 @@ example : ControlInstrTyping [] [] (.block (.val (some .i32))
   .block (ft := ⟨[], [.i32]⟩) rfl (.cons (.plain .const)
     (.cons (.br (input := []) rfl) .empty))
 
-example : ControlInstrTyping [⟨[.i32], [.i64]⟩] [] (.loop (.typeIdx 0) [.br 0])
+example : ControlInstrTyping [.func ⟨[.i32], [.i64]⟩] [] (.loop (.typeIdx 0) [.br 0])
     [.i32] [.i64] :=
   .loop (ft := ⟨[.i32], [.i64]⟩) rfl (.cons (.br (input := []) rfl) .empty)
 

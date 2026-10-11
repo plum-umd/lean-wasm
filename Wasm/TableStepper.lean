@@ -140,6 +140,11 @@ def checkedTableStep (store : Store) (state : Frame) (es : List AdminInstr) :
       (checkedTableStep store state body).map fun next =>
         ⟨(next.val.1, [.label n continuation next.val.2]), .label next.property⟩
     simpa [values] using tableContext [] tail inner
+  | .handler catches body :: tail =>
+    let inner : CheckedTableStep store state [.handler catches body] :=
+      (checkedTableStep store state body).map fun next =>
+        ⟨(next.val.1, [.handler catches next.val.2]), .handler next.property⟩
+    simpa [values] using tableContext [] tail inner
   | .frame n frame body :: tail =>
     let inner : CheckedTableStep store state [.frame n frame body] :=
       (checkedTableStep store frame body).map fun next =>

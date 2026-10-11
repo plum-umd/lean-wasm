@@ -36,7 +36,7 @@ inductive TableInstrTyping (types : TypeContext) (tables : List TableType)
   | drop (he : elems[y]? = some kind) :
       TableInstrTyping types tables elems (.elemDrop y) [] []
   | indirect (ht : tables[x]? = some table) (hk : table.kind = .func)
-      (hf : types[y]? = some ft) :
+      (hf : types.func? (y) = some ft) :
       TableInstrTyping types tables elems (.callIndirect x y)
         (ft.params ++ [table.addrType]) ft.results
 

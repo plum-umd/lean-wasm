@@ -13,7 +13,7 @@ private def literalIs (width : NumWidth) (text : String) (expected : Value) : Bo
   | .error _ => false
 
 private def floatModule : Module := {
-  types := [⟨[.f32], [.f32]⟩, ⟨[], [.f64]⟩, ⟨[], [.i32]⟩]
+  types := [.func ⟨[.f32], [.f32]⟩, .func ⟨[], [.f64]⟩, .func ⟨[], [.i32]⟩]
   globals := [⟨⟨.var, .f32⟩, [.const (.f32 0)]⟩]
   mems := [⟨.i32, 1, none⟩]
   funcs := [

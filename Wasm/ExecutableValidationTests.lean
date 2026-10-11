@@ -7,7 +7,7 @@ private def check (condition : Bool) (message : String) : IO Unit :=
 
 private def sample (body : List Instr) (results : List ValType := [.i32])
     (params : List ValType := []) (locals : List ValType := []) : Module :=
-  { types := [⟨params, results⟩], funcs := [⟨0, locals, body⟩],
+  { types := [.func ⟨params, results⟩], funcs := [⟨0, locals, body⟩],
     exports := [⟨"f", .func 0⟩] }
 
 private def rejected : Result Unit → Bool
@@ -31,7 +31,7 @@ private def unsupported : Result Unit → Bool
     "return may discard the stack prefix"
   check ((validate (sample [.unreachable] [.i32, .i64])).isOk) "terminal stack polymorphism"
   let calls : Module := {
-    types := [⟨[.i32], [.i32]⟩]
+    types := [.func ⟨[.i32], [.i32]⟩]
     funcs := [⟨0, [], [.localGet 0, .call 1]⟩, ⟨0, [], [.localGet 0]⟩] }
   check ((validate calls).isOk) "forward direct call"
   for m in [
@@ -59,8 +59,11 @@ private def unsupported : Result Unit → Bool
   check ((validate {sample [] [] with start := some 0}).isOk) "void start"
   check ((validate {m with mems := [⟨.i32, 0, none⟩]}).isOk) "memory supported"
   check ((validate (sample [.unreachable, .const (.i32 1)])).isOk) "dead code checked"
-  check (unsupported (validate (sample [.binop .i32 .add, .select (some [.refNonNull .func])])))
-    "preflight unsupported code before reporting invalid"
+  check (rejected (validate (sample [.binop .i32 .add, .select (some [.refNonNull .func])])))
+    "typed select still rejects an invalid numeric prefix"
+  for results in ([[], [.i32, .i64]] : List (List ValType)) do
+    check (rejected (validate (sample [.unreachable, .select (some results)] [])))
+      "typed select requires exactly one result"
   check ((validate (sample [.localGet 0] [.ref .func] [.ref .func])).isOk)
     "nullable reference parameters and results"
 
@@ -91,17 +94,18 @@ private def unsupported : Result Unit → Bool
       [.block (.val (some .i32)) [.unreachable, .brTable [0] 1], .drop]] []
   ] do check (rejected (validate m)) "structured or dead-code rejection"
   let parameterLoop : Module := {
-    types := [⟨[], [.i64]⟩, ⟨[.i32], [.i64]⟩]
+    types := [.func ⟨[], [.i64]⟩, .func ⟨[.i32], [.i64]⟩]
     funcs := [⟨0, [], [.const (.i32 1), .loop (.typeIdx 1) [.drop, .const (.i64 9)]]⟩] }
   check ((validate parameterLoop).isOk) "loop parameters"
   check (rejected (validate {parameterLoop with funcs := [⟨0, [],
     [.const (.i32 1), .loop (.typeIdx 1) [.const (.i64 9), .br 0]]⟩]}))
     "loop label takes parameters, not results"
-  check (unsupported (validate (sample [.block (.val (some (.refNonNull .func))) [.unreachable]])))
-    "nonnullable block signature unsupported"
+  check ((validate (sample [.block (.val (some (.refNonNull .func)))
+    [.unreachable]] [.refNonNull .func])).isOk)
+    "nonnullable block signature"
 
 private def indirectModule : Module := {
-  types := [⟨[.i32], [.i32]⟩, ⟨[], [.i32]⟩]
+  types := [.func ⟨[.i32], [.i32]⟩, .func ⟨[], [.i32]⟩]
   funcs := [⟨0, [], [.localGet 0]⟩,
     ⟨1, [], [.const (.i32 7), .const (.i32 0), .callIndirect 0 0]⟩]
   tables := [⟨⟨.i32, 1, some 2, .func, true⟩, [.refNull .func]⟩]
@@ -130,9 +134,9 @@ private def indirectModule : Module := {
   check ((validate {indirectModule with
     elems := [{kind := .extern, init := [[.refNull .extern]]}]}).isOk)
     "passive external elements"
-  check (unsupported (validate {indirectModule with funcs := [⟨1, [],
+  check (rejected (validate {indirectModule with funcs := [⟨1, [],
     [.callIndirect 99 0, .select (some [.refNonNull .func]), .drop]⟩]}))
-    "unsupported instructions preflight"
+    "invalid indirect type index with typed select"
 
 example : indirectModule.Valid := validate_sound (by
   have h : (validate indirectModule).isOk = true := by decide +kernel
@@ -141,7 +145,7 @@ example : indirectModule.Valid := validate_sound (by
   | ok payload => cases payload; rfl)
 
 private def referenceModule : Module := {
-  types := [⟨[], [.ref .func]⟩]
+  types := [.func ⟨[], [.ref .func]⟩]
   funcs := [⟨0, [.ref .func], [.refFunc 0, .localTee 0, .drop,
     .localGet 0, .const (.i32 1), .tableGrow 0, .drop,
     .const (.i32 0), .localGet 0, .tableSet 0,
@@ -187,7 +191,7 @@ example : (sample [.const (.i32 40), .const (.i32 2), .binop .i32 .add]).Valid :
   validate_sound (by rfl)
 
 private def importModule : Module := {
-  types := [⟨[], [.i32]⟩]
+  types := [.func ⟨[], [.i32]⟩]
   imports := [⟨"provider", "f", .func 0⟩,
     ⟨"provider", "t", .table ⟨.i64, 0, some 4, .func, true⟩⟩]
   funcs := [⟨0, [], [.const (.i64 0), .tableGet 0, .drop, .call 0]⟩]
@@ -200,10 +204,14 @@ private def importModule : Module := {
   check (rejected (validate {importModule with
     imports := [⟨"m", "t", .table ⟨.i32, 2, some 1, .func, true⟩⟩]}))
     "invalid imported table limits"
-  for desc in [ImportDesc.memory ⟨.ref .func, 0, none⟩, .global ⟨.const, .refNonNull .func⟩,
+  check (unsupported (validate {importModule with
+    imports := [⟨"m", "x", .memory ⟨.ref .func, 0, none⟩⟩]})) "invalid memory address type"
+  for desc in [ImportDesc.global ⟨.const, .refNonNull .func⟩,
     .table ⟨.i32, 0, none, .func, false⟩] do
-    check (unsupported (validate {importModule with imports := [⟨"m", "x", desc⟩]}))
-      "unsupported import kinds and table reference forms"
+    check ((validate {importModule with
+      imports := [⟨"m", "x", desc⟩]
+      funcs := []
+      exports := []}).isOk) "nonnullable imports"
 
 private theorem importModule_valid : importModule.Valid := validate_sound (by
   have h : (validate importModule).isOk = true := by decide +kernel
@@ -212,7 +220,7 @@ private theorem importModule_valid : importModule.Valid := validate_sound (by
   | ok payload => cases payload; rfl)
 
 private def globalModule : Module := {
-  types := [⟨[], [.i32]⟩]
+  types := [.func ⟨[], [.i32]⟩]
   imports := [⟨"m", "seed", .global ⟨.const, .i32⟩⟩,
     ⟨"m", "reference", .global ⟨.var, .ref .extern⟩⟩]
   globals := [
@@ -231,8 +239,10 @@ private def globalModule : Module := {
     ⟨⟨.const, .ref .extern⟩, [.globalGet 1]⟩]})) "mutable imported initializer read"
   check (rejected (validate {globalModule with globals := [
     ⟨⟨.const, .i32⟩, [.const (.i32 1), .nop]⟩]})) "nonconstant initializer"
-  check (unsupported (validate {globalModule with globals := [
-    ⟨⟨.const, .refNonNull .func⟩, [.refFunc 0]⟩]})) "nonnullable global unsupported"
+  check ((validate {globalModule with
+    globals := [⟨⟨.const, .refNonNull .func⟩, [.refFunc 0]⟩]
+    funcs := [⟨0, [], [.const (.i32 1)]⟩]
+    exports := [⟨"f", .func 0⟩]}).isOk) "nonnullable global initializer"
 
 private theorem globalModule_valid : globalModule.Valid := validate_sound (by
   have h : (validate globalModule).isOk = true := by decide +kernel
@@ -248,7 +258,7 @@ private theorem globalModule_valid : globalModule.Valid := validate_sound (by
 
 #print axioms referenceModule_valid
 private def memoryModule : Module := {
-  types := [⟨[], []⟩]
+  types := [.func ⟨[], []⟩]
   imports := [⟨"m", "memory", .memory ⟨.i32, 1, some 2⟩⟩]
   mems := [⟨.i64, 0, some 1⟩]
   datas := [{bytes := #[], mode := .passive},
@@ -285,5 +295,32 @@ private theorem memoryModule_valid : memoryModule.Valid := validate_sound (by
 #print axioms Wasm.Validation.checkScoped_sound
 #print axioms Wasm.Validation.checkTable_sound
 #print axioms Wasm.Validation.checkElem_sound
+
+private def bottomSelectModule : Module := sample
+  [.unreachable, .const (.i32 1), .select none, .refIsNull, .drop] []
+
+private theorem bottomSelectModule_checked : validate bottomSelectModule = .ok () := by
+  have success : (validate bottomSelectModule).isOk = true := by decide +kernel
+  cases he : validate bottomSelectModule with
+  | error e => simp [he, Except.isOk, Except.toBool] at success
+  | ok payload => cases payload; rfl
+
+example : bottomSelectModule.Valid := validate_sound bottomSelectModule_checked
+
+#eval do
+  check ((validate bottomSelectModule).isOk) "bottom select used as reference"
+  check ((validate (sample
+    [.unreachable, .const (.i64 7), .const (.i32 1), .select none] [.i64])).isOk)
+    "select refines one unknown operand to its numeric counterpart"
+  check (rejected (validate (sample
+    [.unreachable, .refNull .func, .const (.i32 1), .select none, .drop] [])))
+    "known reference operand still invalid for untyped select"
+  check (rejected (validate (sample
+    [.const (.i32 1), .select none, .refIsNull, .drop] [])))
+    "reachable select underflow remains invalid"
+
+#print axioms Wasm.Validation.checkBottomScoped_sound
+#print axioms Wasm.Validation.checkBottomCode_sound
+#print axioms Wasm.Validation.validate_sound
 
 end Wasm.Validation.Tests

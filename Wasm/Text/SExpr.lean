@@ -14,7 +14,10 @@ private def hex (c : Char) : Option Nat :=
   else if 'A' ≤ c && c ≤ 'F' then some (c.toNat - 'A'.toNat + 10)
   else none
 
-private def delimiter (c : Char) : Bool := c.isWhitespace || c == '(' || c == ')' || c == '"'
+private def whitespace (c : Char) : Bool :=
+  c == ' ' || c == '\t' || c == '\n' || c == '\r'
+
+private def delimiter (c : Char) : Bool := whitespace c || c == '(' || c == ')' || c == '"'
 
 private partial def comment (depth : Nat) : List Char → Except String (List Char)
   | [] => .error "unterminated block comment"
@@ -23,9 +26,9 @@ private partial def comment (depth : Nat) : List Char → Except String (List Ch
   | _ :: cs => comment depth cs
 
 private partial def skip : List Char → Except String (List Char)
-  | ';' :: ';' :: cs => skip (cs.dropWhile (· != '\n'))
+  | ';' :: ';' :: cs => skip (cs.dropWhile (fun c => c != '\n' && c != '\r'))
   | '(' :: ';' :: cs => do skip (← comment 1 cs)
-  | c :: cs => if c.isWhitespace then skip cs else .ok (c :: cs)
+  | c :: cs => if whitespace c then skip cs else .ok (c :: cs)
   | [] => .ok []
 
 private def unicodeEscape (cs : List Char) : Except String (Char × List Char) := do
@@ -67,28 +70,62 @@ where
     | '\\' => quoted (out.push 92) cs
     | _ => .error "unsupported or invalid string escape"
 
-private partial def expressions (nested : Bool) (input : List Char) :
+private partial def tokenChars (annotation : Bool) : List Char → List Char
+  | [] => []
+  | ';' :: ';' :: _ => []
+  | c :: cs => if delimiter c || (!annotation && c == ';') then []
+    else c :: tokenChars annotation cs
+
+private def separated : List Char → Bool
+  | [] => true
+  | ';' :: ';' :: _ => true
+  | c :: _ => whitespace c || c == '(' || c == ')'
+
+private partial def expressions (nested annotation : Bool) (input : List Char) :
     Except String (List SExpr × List Char) := do
   let cs ← skip input
   match cs with
   | [] => if nested then .error "unclosed parenthesis" else .ok ([], [])
   | ')' :: rest => if nested then .ok ([], rest) else .error "unexpected closing parenthesis"
   | '(' :: rest =>
-    let (items, rest) ← expressions true rest
-    let (tail, rest) ← expressions nested rest
-    return (.list items :: tail, rest)
+    let ignored := match rest with | '@' :: _ => true | _ => false
+    let (items, rest) ← expressions true (annotation || ignored) rest
+    if ignored && !annotation then
+      match items.head? with
+      | some (.atom id) => if id == "@" then throw "empty annotation identifier"
+      | _ => throw "invalid annotation identifier"
+    let (tail, rest) ← expressions nested annotation rest
+    return (if ignored then tail else .list items :: tail, rest)
   | '"' :: rest =>
     let (bytes, rest) ← quoted {} rest
-    let (tail, rest) ← expressions nested rest
+    if !annotation && !separated rest then throw "missing token separator"
+    let (tail, rest) ← expressions nested annotation rest
     return (.string bytes :: tail, rest)
+  | marker :: '"' :: rest =>
+    if marker != '$' && marker != '@' then
+      if !annotation then throw "invalid quoted token"
+      let (tail, rest) ← expressions nested annotation ('"' :: rest)
+      return (.atom (String.singleton marker) :: tail, rest)
+    let (bytes, rest) ← quoted {} rest
+    let some decoded := String.fromUTF8? bytes | throw "identifier is not UTF-8"
+    if marker == '$' && decoded.isEmpty then throw "empty identifier"
+    if !annotation && !separated rest then throw "missing token separator"
+    let (tail, rest) ← expressions nested annotation rest
+    return (.atom (String.singleton marker ++ decoded) :: tail, rest)
   | _ =>
-    let token := cs.takeWhile (!delimiter ·)
+    let token := tokenChars annotation cs
     if token.isEmpty then throw "empty token"
-    let (tail, rest) ← expressions nested (cs.drop token.length)
-    return (.atom (String.ofList token) :: tail, rest)
+    if token.any (fun c => c.toNat < 32 || c.toNat ≥ 127) then throw "illegal character"
+    let atom := String.ofList token
+    if !annotation && atom == "$" then throw "empty identifier"
+    let rest := cs.drop token.length
+    if !annotation && (match rest with | '"' :: _ => true | _ => false) then
+      throw "missing token separator"
+    let (tail, rest) ← expressions nested annotation rest
+    return (.atom atom :: tail, rest)
 
 /-- Generic text-script reader. It preserves quoted strings as bytes. -/
 def parse (text : String) : Except String (List SExpr) :=
-  (expressions false text.toList).map Prod.fst
+  (expressions false false text.toList).map Prod.fst
 
 end Wasm.Text

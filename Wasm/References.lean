@@ -6,14 +6,89 @@ def RefValue.isNull : RefValue → Bool
   | .null _ => true
   | _ => false
 
+def RefValue.internalize : RefValue → RefValue
+  | .null _ => .null .any
+  | .extern id => .host id
+  | .external reference => reference
+  | reference => reference
+
+def RefValue.externalize : RefValue → RefValue
+  | .null _ => .null .extern
+  | .host id => .extern id
+  | reference => .external reference
+
+def RefValue.equal (a b : RefValue) : Bool :=
+  match a, b with
+  | .null _, .null _ => true
+  | _, _ => decide (a = b)
+
+/-- Equations for the GC operations that neither allocate nor inspect heap objects. -/
+def evalGCReference : GCReferenceOp → List Value → Option (List AdminInstr)
+  | .i31New, [.i32 bits] => some (values [.ref (.i31 (bits.truncate 31))])
+  | .i31GetS, [.ref (.i31 bits)] => some (values [.i32 (bits.signExtend 32)])
+  | .i31GetU, [.ref (.i31 bits)] => some (values [.i32 (bits.zeroExtend 32)])
+  | .i31GetS, [.ref (.null _)] | .i31GetU, [.ref (.null _)] => some [.trap]
+  | .eq, [.ref a, .ref b] => some (values [.i32 (if a.equal b then 1 else 0)])
+  | .anyConvertExtern, [.ref reference] => some (values [.ref reference.internalize])
+  | .externConvertAny, [.ref reference] => some (values [.ref reference.externalize])
+  | _, _ => none
+
 inductive ReferenceReduces (store : Store) (state : Frame) :
     List AdminInstr → List AdminInstr → Prop where
+  | testYes (closedType : heap.close? state.module.definedTypes = some closed)
+      (matched : Typed store (.ref reference)
+        (if nullable then .ref closed else .refNonNull closed)) :
+      ReferenceReduces store state
+        [ .instr (.const (.ref reference)), .instr (.refTest nullable heap) ] (values [.i32 1])
+  | testNo (closedType : heap.close? state.module.definedTypes = some closed)
+      (rejected : (searchValue store (.ref reference)
+        (if nullable then .ref closed else .refNonNull closed)).isRejected = true) :
+      ReferenceReduces store state
+        [ .instr (.const (.ref reference)), .instr (.refTest nullable heap) ] (values [.i32 0])
+  | castSource (closedType : heap.close? state.module.definedTypes = some closed)
+      (matched : Typed store (.ref reference)
+        (if nullable then .ref closed else .refNonNull closed)) :
+      ReferenceReduces store state
+        [ .instr (.const (.ref reference)), .instr (.refCast nullable heap) ]
+        (values [.ref reference])
+  | castSourceTrap (closedType : heap.close? state.module.definedTypes = some closed)
+      (rejected : (searchValue store (.ref reference)
+        (if nullable then .ref closed else .refNonNull closed)).isRejected = true) :
+      ReferenceReduces store state
+        [ .instr (.const (.ref reference)), .instr (.refCast nullable heap) ] [.trap]
+  | brCastYes (closedType : target.heap.close? state.module.definedTypes = some closed)
+      (matched : Typed store (.ref reference)
+        (if target.nullable then .ref closed else .refNonNull closed)) :
+      ReferenceReduces store state
+        [.instr (.const (.ref reference)), .instr (.brOnCast fail x source target)]
+        (if fail then values [.ref reference] else values [.ref reference] ++ [.instr (.br x)])
+  | brCastNo (closedType : target.heap.close? state.module.definedTypes = some closed)
+      (rejected : (searchValue store (.ref reference)
+        (if target.nullable then .ref closed else .refNonNull closed)).isRejected = true) :
+      ReferenceReduces store state
+        [.instr (.const (.ref reference)), .instr (.brOnCast fail x source target)]
+        (if fail then values [.ref reference] ++ [.instr (.br x)] else values [.ref reference])
+  | gc (evaluated : evalGCReference op args = some code) :
+      ReferenceReduces store state (values args ++ [.instr (.gcReference op)]) code
   | null (ht : kind.close? state.module.definedTypes = some closed) :
       ReferenceReduces store state [.instr (.refNull kind)] (values [.ref (.null closed)])
   | func (ha : state.module.funcAddr? x = some address) :
       ReferenceReduces store state [.instr (.refFunc x)] (values [.ref (.func address)])
   | isNull : ReferenceReduces store state [ .instr (.const (.ref r)), .instr .refIsNull ]
       (values [.i32 (if r.isNull then 1 else 0)])
+  | asNonNullTrap : ReferenceReduces store state
+      [.instr (.const (.ref (.null heap))), .instr .refAsNonNull] [.trap]
+  | asNonNull (hn : reference.isNull = false) : ReferenceReduces store state
+      [.instr (.const (.ref reference)), .instr .refAsNonNull] (values [.ref reference])
+  | brOnNull : ReferenceReduces store state
+      [.instr (.const (.ref (.null heap))), .instr (.brOnNull x)] [.instr (.br x)]
+  | brOnNullFallthrough (hn : reference.isNull = false) : ReferenceReduces store state
+      [.instr (.const (.ref reference)), .instr (.brOnNull x)] (values [.ref reference])
+  | brOnNonNullFallthrough : ReferenceReduces store state
+      [.instr (.const (.ref (.null heap))), .instr (.brOnNonNull x)] []
+  | brOnNonNull (hn : reference.isNull = false) : ReferenceReduces store state
+      [.instr (.const (.ref reference)), .instr (.brOnNonNull x)]
+        (values [.ref reference] ++ [.instr (.br x)])
   | castLegacy (ht : Typed store (.ref reference) (.ref ft.definedType.heap)) :
       ReferenceReduces store state [.instr (.const (.ref reference)), .castFunc ft]
         (values [.ref reference])
@@ -34,6 +109,8 @@ inductive ReferenceStep (store : Store) :
       ReferenceStep store state (values vs ++ es ++ tail) (values vs ++ es' ++ tail)
   | label : ReferenceStep store state body body' →
       ReferenceStep store state [.label n continuation body] [.label n continuation body']
+  | handler : ReferenceStep store state body body' →
+      ReferenceStep store state [.handler catches body] [.handler catches body']
   | frame : ReferenceStep store inner body body' →
       ReferenceStep store state [.frame n inner body] [.frame n inner body']
 
@@ -43,6 +120,44 @@ abbrev CheckedReferenceStep (store : Store) (state : Frame) (es : List AdminInst
 private def referenceRedex (store : Store) (state : Frame) (es : List AdminInstr) :
     CheckedReferenceStep store state es := by
   match es with
+  | [.instr (.const (.ref reference)), .instr (.refTest nullable heap)] =>
+    match closedType : heap.close? state.module.definedTypes with
+    | none => exact none
+    | some closed =>
+      match checked : searchValue store (.ref reference)
+          (if nullable then .ref closed else .refNonNull closed) with
+      | .found proof => exact some ⟨_, .redex (.testYes closedType proof.down)⟩
+      | .rejected => exact some ⟨_, .redex (.testNo closedType
+          (by simp [checked, Types.Search.isRejected]))⟩
+      | .inconclusive => exact none
+  | [.instr (.const (.ref reference)), .instr (.refCast nullable heap)] =>
+    match closedType : heap.close? state.module.definedTypes with
+    | none => exact none
+    | some closed =>
+      match checked : searchValue store (.ref reference)
+          (if nullable then .ref closed else .refNonNull closed) with
+      | .found proof => exact some ⟨_, .redex (.castSource closedType proof.down)⟩
+      | .rejected => exact some ⟨_, .redex (.castSourceTrap closedType
+          (by simp [checked, Types.Search.isRejected]))⟩
+      | .inconclusive => exact none
+  | [.instr (.const (.ref reference)), .instr (.brOnCast fail x source target)] =>
+    match closedType : target.heap.close? state.module.definedTypes with
+    | none => exact none
+    | some closed =>
+      match checked : searchValue store (.ref reference)
+          (if target.nullable then .ref closed else .refNonNull closed) with
+      | .found proof => exact some ⟨_, .redex (.brCastYes closedType proof.down)⟩
+      | .rejected => exact some ⟨_, .redex (.brCastNo closedType
+          (by simp [checked, Types.Search.isRejected]))⟩
+      | .inconclusive => exact none
+  | [.instr (.const a), .instr (.const b), .instr (.gcReference op)] =>
+    match evaluated : evalGCReference op [a, b] with
+    | none => exact none
+    | some code => exact some ⟨code, .redex (.gc evaluated)⟩
+  | [.instr (.const a), .instr (.gcReference op)] =>
+    match evaluated : evalGCReference op [a] with
+    | none => exact none
+    | some code => exact some ⟨code, .redex (.gc evaluated)⟩
   | [.instr (.refNull kind)] =>
     match ht : kind.close? state.module.definedTypes with
     | none => exact none
@@ -52,6 +167,30 @@ private def referenceRedex (store : Store) (state : Frame) (es : List AdminInstr
     | none => exact none
     | some address => exact some ⟨_, .redex (.func ha)⟩
   | [.instr (.const (.ref r)), .instr .refIsNull] => exact some ⟨_, .redex .isNull⟩
+  | [.instr (.const (.ref reference)), .instr .refAsNonNull] =>
+    match reference with
+    | .null _ => exact some ⟨_, .redex .asNonNullTrap⟩
+    | .func _ => exact some ⟨_, .redex (.asNonNull rfl)⟩
+    | .extern _ => exact some ⟨_, .redex (.asNonNull rfl)⟩
+    | .exn _ => exact some ⟨_, .redex (.asNonNull rfl)⟩
+    | .struct_ _ | .array _ | .i31 _ | .host _ | .external _ =>
+      exact some ⟨_, .redex (.asNonNull rfl)⟩
+  | [.instr (.const (.ref reference)), .instr (.brOnNull x)] =>
+    match reference with
+    | .null _ => exact some ⟨_, .redex .brOnNull⟩
+    | .func _ => exact some ⟨_, .redex (.brOnNullFallthrough rfl)⟩
+    | .extern _ => exact some ⟨_, .redex (.brOnNullFallthrough rfl)⟩
+    | .exn _ => exact some ⟨_, .redex (.brOnNullFallthrough rfl)⟩
+    | .struct_ _ | .array _ | .i31 _ | .host _ | .external _ =>
+      exact some ⟨_, .redex (.brOnNullFallthrough rfl)⟩
+  | [.instr (.const (.ref reference)), .instr (.brOnNonNull x)] =>
+    match reference with
+    | .null _ => exact some ⟨_, .redex .brOnNonNullFallthrough⟩
+    | .func _ => exact some ⟨_, .redex (.brOnNonNull rfl)⟩
+    | .extern _ => exact some ⟨_, .redex (.brOnNonNull rfl)⟩
+    | .exn _ => exact some ⟨_, .redex (.brOnNonNull rfl)⟩
+    | .struct_ _ | .array _ | .i31 _ | .host _ | .external _ =>
+      exact some ⟨_, .redex (.brOnNonNull rfl)⟩
   | [.instr (.const (.ref reference)), .castFunc ft] =>
     match checked : searchValue store (.ref reference) (.ref ft.definedType.heap) with
     | .found proof => exact some ⟨_, .redex (.castLegacy proof.down)⟩
@@ -74,9 +213,37 @@ private def referenceContext (vs : List Value) (tail : List AdminInstr)
 def checkedReferenceStep (store : Store) (state : Frame) (es : List AdminInstr) :
     CheckedReferenceStep store state es := by
   match es with
+  | .instr (.const (.ref reference)) :: .instr (.refTest nullable heap) :: tail =>
+    simpa [values] using referenceContext [] tail
+      (referenceRedex store state
+        [.instr (.const (.ref reference)), .instr (.refTest nullable heap)])
+  | .instr (.const (.ref reference)) :: .instr (.refCast nullable heap) :: tail =>
+    simpa [values] using referenceContext [] tail
+      (referenceRedex store state
+        [.instr (.const (.ref reference)), .instr (.refCast nullable heap)])
+  | .instr (.const (.ref reference)) :: .instr (.brOnCast fail x source target) :: tail =>
+    simpa [values] using referenceContext [] tail
+      (referenceRedex store state
+        [.instr (.const (.ref reference)), .instr (.brOnCast fail x source target)])
+  | .instr (.const a) :: .instr (.const b) :: .instr (.gcReference .eq) :: tail =>
+    simpa [values] using referenceContext [] tail
+      (referenceRedex store state
+        [.instr (.const a), .instr (.const b), .instr (.gcReference .eq)])
+  | .instr (.const a) :: .instr (.gcReference op) :: tail =>
+    simpa [values] using referenceContext [] tail
+      (referenceRedex store state [.instr (.const a), .instr (.gcReference op)])
   | .instr (.const (.ref r)) :: .instr .refIsNull :: tail =>
     simpa [values] using referenceContext [] tail
       (referenceRedex store state [.instr (.const (.ref r)), .instr .refIsNull])
+  | .instr (.const (.ref r)) :: .instr .refAsNonNull :: tail =>
+    simpa [values] using referenceContext [] tail
+      (referenceRedex store state [.instr (.const (.ref r)), .instr .refAsNonNull])
+  | .instr (.const (.ref r)) :: .instr (.brOnNull x) :: tail =>
+    simpa [values] using referenceContext [] tail
+      (referenceRedex store state [.instr (.const (.ref r)), .instr (.brOnNull x)])
+  | .instr (.const (.ref r)) :: .instr (.brOnNonNull x) :: tail =>
+    simpa [values] using referenceContext [] tail
+      (referenceRedex store state [.instr (.const (.ref r)), .instr (.brOnNonNull x)])
   | .instr (.const (.ref r)) :: .castFunc ft :: tail =>
     simpa [values] using referenceContext [] tail
       (referenceRedex store state [.instr (.const (.ref r)), .castFunc ft])
@@ -94,6 +261,11 @@ def checkedReferenceStep (store : Store) (state : Frame) (es : List AdminInstr) 
     let inner : CheckedReferenceStep store state [.label n continuation body] :=
       (checkedReferenceStep store state body).map fun next =>
         ⟨[.label n continuation next.val], .label next.property⟩
+    simpa [values] using referenceContext [] tail inner
+  | .handler catches body :: tail =>
+    let inner : CheckedReferenceStep store state [.handler catches body] :=
+      (checkedReferenceStep store state body).map fun next =>
+        ⟨[.handler catches next.val], .handler next.property⟩
     simpa [values] using referenceContext [] tail inner
   | .frame n frame body :: tail =>
     let inner : CheckedReferenceStep store state [.frame n frame body] :=

@@ -42,6 +42,7 @@ def Value.unsigned : Value → Nat
   | .i64 bits => bits.toNat
   | .f32 bits => bits.toNat
   | .f64 bits => bits.toNat
+  | .v128 bits => bits.toNat
   | .ref _ => 0
 def Value.ofNat (type : ValType) (n : Nat) : Value :=
   match type with
@@ -49,6 +50,7 @@ def Value.ofNat (type : ValType) (n : Nat) : Value :=
   | .i64 => .i64 (BitVec.ofNat 64 n)
   | .f32 => .f32 (BitVec.ofNat 32 n)
   | .f64 => .f64 (BitVec.ofNat 64 n)
+  | .v128 => .v128 (BitVec.ofNat 128 n)
   | .ref kind | .refNonNull kind => .ref (.null kind)
 def Value.ofInt (type : ValType) (n : Int) : Value :=
   match type with
@@ -56,6 +58,7 @@ def Value.ofInt (type : ValType) (n : Int) : Value :=
   | .i64 => .i64 (BitVec.ofInt 64 n)
   | .f32 => .f32 (BitVec.ofInt 32 n)
   | .f64 => .f64 (BitVec.ofInt 64 n)
+  | .v128 => .v128 (BitVec.ofInt 128 n)
   | .ref kind | .refNonNull kind => .ref (.null kind)
 def Value.address? (type : ValType) (value : Value) : Option Nat :=
   if type.IsInteger ∧ value.type = type then some value.unsigned else none
@@ -186,6 +189,8 @@ inductive MemoryStep : Store → Frame → List AdminInstr → Store → List Ad
       MemoryStep store state (values vs ++ es ++ tail) store' (values vs ++ es' ++ tail)
   | label : MemoryStep store state body store' body' →
       MemoryStep store state [.label n continuation body] store' [.label n continuation body']
+  | handler : MemoryStep store state body store' body' →
+      MemoryStep store state [.handler catches body] store' [.handler catches body']
   | frame : MemoryStep store inner body store' body' →
       MemoryStep store state [.frame n inner body] store' [.frame n inner body']
 
@@ -193,18 +198,18 @@ theorem MemoryStep.functions_preserved (h : MemoryStep store state es store' es'
     store'.funcs = store.funcs := by
   induction h with
   | access _ _ _ hr => cases hr <;> rfl
-  | context _ ih | label _ ih | frame _ ih => exact ih
+  | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
 
 theorem MemoryStep.globals_preserved (h : MemoryStep store state es store' es') :
     store'.globals = store.globals := by
   induction h with
   | access _ _ _ hr => cases hr <;> rfl
-  | context _ ih | label _ ih | frame _ ih => exact ih
+  | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
 
 theorem MemoryStep.count_preserved (h : MemoryStep store state es store' es') :
     store'.mems.length = store.mems.length := by
   induction h with
   | access _ _ _ hr => cases hr <;> simp [Store.applyMemory, Store.setMemory]
-  | context _ ih | label _ ih | frame _ ih => exact ih
+  | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
 
 end Wasm

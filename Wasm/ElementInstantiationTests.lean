@@ -8,7 +8,7 @@ private def sameElement {α : Type} [BEq α] (actual expected : α) : Bool := ac
 local infix:50 " ≟ " => sameElement
 
 private def referenceModule : Module :=
-  { types := [⟨[.i32], [.i32]⟩, ⟨[], []⟩],
+  { types := [.func ⟨[.i32], [.i32]⟩, .func ⟨[], []⟩],
     funcs := [⟨0, [], [.localGet 0, .const (.i32 1), .binop .i32 .add]⟩,
       ⟨1, [], [.const (.i32 41), .const (.i32 0), .callIndirect 0 0, .globalSet 0]⟩],
     globals := [⟨⟨.var, .i32⟩, [.const (.i32 0)]⟩],
@@ -18,7 +18,7 @@ private def referenceModule : Module :=
     start := some 1, exports := [⟨"table", .table 0⟩, ⟨"result", .global 0⟩] }
 
 private def referenceContext : FunctionContext :=
-  { types := [⟨[.i32], [.i32]⟩, ⟨[], []⟩], funcs := [⟨[.i32], [.i32]⟩, ⟨[], []⟩],
+  { types := [.func ⟨[.i32], [.i32]⟩, .func ⟨[], []⟩], funcs := [⟨[.i32], [.i32]⟩, ⟨[], []⟩],
     globals := [⟨.var, .i32⟩], tables := [⟨.i32, 3, some 5, .func, true⟩],
     elems := [.func, .func, .func], declaredRefs := [0, 0, 1] }
 
@@ -132,7 +132,7 @@ private def elementInstantiationTests : IO Unit := do
   checkElement "preserves old table"
     (repeated.execution.state.store.tables[0]? ≟ final.store.tables[0]?)
   let initialized : Module :=
-    { types := [⟨[], []⟩], funcs := [⟨0, [], []⟩],
+    { types := [.func ⟨[], []⟩], funcs := [⟨0, [], []⟩],
       globals := [⟨⟨.const, .ref .func⟩, [.refFunc 0]⟩],
       tables := [⟨⟨.i64, 2, some 3, .func, true⟩, [.refFunc 0]⟩] }
   let .ok nonnull := checkedPrepareInstantiation final.store initialized []
@@ -147,7 +147,7 @@ private def elementInstantiationTests : IO Unit := do
     { funcs := [⟨⟨[], []⟩, {}, .wasm ⟨0, [], []⟩⟩],
       tables := [importedTable] }
   let source : Module :=
-    { types := [⟨[], []⟩], imports := [⟨"env", "t", .table ⟨.i32, 2, some 5, .func, true⟩⟩,
+    { types := [.func ⟨[], []⟩], imports := [⟨"env", "t", .table ⟨.i32, 2, some 5, .func, true⟩⟩,
       ⟨"env", "f", .func 0⟩],
       elems := [⟨.func, [[.refFunc 0]], .active 0 [.const (.i32 0)], true⟩,
         ⟨.func, [[.refFunc 0]], .active 0 [.const (.i32 3)], true⟩],

@@ -79,6 +79,11 @@ def checkedBulkStep (store : Store) (state : Frame) (es : List AdminInstr) :
       (checkedBulkStep store state body).map fun next =>
         ⟨(next.val.1, [.label n continuation next.val.2]), .label next.property⟩
     simpa [values] using bulkContext [] tail inner
+  | .handler catches body :: tail =>
+    let inner : CheckedBulkStep store state [.handler catches body] :=
+      (checkedBulkStep store state body).map fun next =>
+        ⟨(next.val.1, [.handler catches next.val.2]), .handler next.property⟩
+    simpa [values] using bulkContext [] tail inner
   | .frame n frame body :: tail =>
     let inner : CheckedBulkStep store state [.frame n frame body] :=
       (checkedBulkStep store frame body).map fun next =>

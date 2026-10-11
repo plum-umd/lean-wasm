@@ -1,4 +1,5 @@
 import Wasm.TypeEquality
+import Wasm.VectorOpcode
 
 /-!
 Integer, parametric, and structured-control fragment of WebAssembly 3.0 abstract syntax.
@@ -15,19 +16,51 @@ structure FuncAddr where
   index : Nat
   deriving DecidableEq, Repr
 
+structure StructAddr where
+  index : Nat
+  deriving DecidableEq, Repr
+
+structure ArrayAddr where
+  index : Nat
+  deriving DecidableEq, Repr
+
+structure TagAddr where
+  index : Nat
+  deriving DecidableEq, Repr
+
+structure ExnAddr where
+  index : Nat
+  deriving DecidableEq, Repr
+
+inductive Catch where
+  | tag (index depth : Nat) (reference : Bool)
+  | all (depth : Nat) (reference : Bool)
+  deriving DecidableEq, Repr
+
 inductive RefValue where
   | null (kind : RefKind)
   | func (address : FuncAddr)
+  | exn (address : ExnAddr)
   | extern (identifier : Nat)
+  | struct_ (address : StructAddr)
+  | array (address : ArrayAddr)
+  | i31 (bits : BitVec 31)
+  | host (identifier : Nat)
+  | external (reference : RefValue)
   deriving DecidableEq, Repr
 
 def RefValue.kind : RefValue → RefKind
   | .null kind => kind
   | .func _ => .func
-  | .extern _ => .extern
+  | .exn _ => .exn
+  | .extern _ | .external _ => .extern
+  | .struct_ _ => .struct_
+  | .array _ => .array
+  | .i31 _ => .i31
+  | .host _ => .any
 
 inductive ValType where
-  | i32 | i64 | f32 | f64
+  | i32 | i64 | f32 | f64 | v128
   | ref (kind : RefKind)
   | refNonNull (heap : RefKind)
   deriving DecidableEq, Repr
@@ -38,6 +71,7 @@ inductive Value where
   | i64 (bits : BitVec 64)
   | f32 (bits : BitVec 32)
   | f64 (bits : BitVec 64)
+  | v128 (bits : BitVec 128)
   | ref (reference : RefValue)
   deriving DecidableEq, Repr
 
@@ -47,6 +81,7 @@ def Value.type : Value → ValType
   | .i64 _ => .i64
   | .f32 _ => .f32
   | .f64 _ => .f64
+  | .v128 _ => .v128
   | .ref r => .ref r.kind
 
 def ValType.IsInteger : ValType → Prop
@@ -57,7 +92,7 @@ instance (t : ValType) : Decidable t.IsInteger := by cases t <;> unfold ValType.
   infer_instance
 
 def ValType.IsNumber : ValType → Prop
-  | .i32 | .i64 | .f32 | .f64 => True
+  | .i32 | .i64 | .f32 | .f64 | .v128 => True
   | _ => False
 
 instance (t : ValType) : Decidable t.IsNumber := by
@@ -151,7 +186,22 @@ inductive BlockType where
   deriving DecidableEq, Repr
 
 /-- Expanded function signatures; recursive type identities are stored separately. -/
-abbrev TypeContext := List FuncType
+inductive CompositeType where
+  | func (type : FuncType)
+  | struct_ (fields : List Types.FieldType)
+  | array (field : Types.FieldType)
+  deriving DecidableEq, Repr
+
+instance : Coe FuncType CompositeType := ⟨CompositeType.func⟩
+
+def CompositeType.func? : CompositeType → Option FuncType
+  | .func type => some type
+  | _ => none
+
+abbrev TypeContext := List CompositeType
+
+def TypeContext.func? (types : TypeContext) (index : Nat) : Option FuncType :=
+  types[index]?.bind CompositeType.func?
 
 inductive Mutability where
   | const
@@ -166,6 +216,7 @@ structure GlobalType where
 def ValType.bits : ValType → Nat
   | .i32 | .f32 => 32
   | .i64 | .f64 => 64
+  | .v128 => 128
   | .ref _ | .refNonNull _ => 0
 
 structure MemoryType where
@@ -185,6 +236,13 @@ structure TableType where
 structure MemArg where
   align : Nat := 0
   offset : Nat := 0
+  deriving DecidableEq, Repr
+
+structure VectorOp where
+  opcode : VectorOpcode
+  lanes : List Nat := []
+  memory : Nat := 0
+  arg : MemArg := {}
   deriving DecidableEq, Repr
 
 inductive LoadOp where
@@ -225,7 +283,36 @@ def StoreOp.bytes : StoreOp → Nat
 
 def BlockType.resolve (types : TypeContext) : BlockType → Option FuncType
   | .val result => some ⟨[], result.toList⟩
-  | .typeIdx index => types[index]?
+  | .typeIdx index => types.func? (index)
+
+inductive GCReferenceOp where
+  | i31New | i31GetS | i31GetU | eq | anyConvertExtern | externConvertAny
+  deriving DecidableEq, Repr
+
+def GCReferenceOp.signature (nullable : Bool := true) : GCReferenceOp → FuncType
+  | .i31New => ⟨[.i32], [.refNonNull .i31]⟩
+  | .i31GetS | .i31GetU => ⟨[.ref .i31], [.i32]⟩
+  | .eq => ⟨[.ref .eq, .ref .eq], [.i32]⟩
+  | .anyConvertExtern =>
+    ⟨[if nullable then .ref .extern else .refNonNull .extern],
+      [if nullable then .ref .any else .refNonNull .any]⟩
+  | .externConvertAny =>
+    ⟨[if nullable then .ref .any else .refNonNull .any],
+      [if nullable then .ref .extern else .refNonNull .extern]⟩
+
+inductive ArrayOp where
+  | new_ (typeIdx : Nat) (default : Bool)
+  | newFixed (typeIdx count : Nat)
+  | newData (typeIdx data : Nat)
+  | newElem (typeIdx elem : Nat)
+  | get (typeIdx : Nat) (signed : Option Bool)
+  | set (typeIdx : Nat)
+  | len
+  | fill (typeIdx : Nat)
+  | copy (destination source : Nat)
+  | initData (typeIdx data : Nat)
+  | initElem (typeIdx elem : Nat)
+  deriving DecidableEq, Repr
 
 inductive Instr where
   | const (value : Value)
@@ -239,6 +326,7 @@ inductive Instr where
   | intBinary (type : ValType) (op : IntBinaryOp)
   | intRel (type : ValType) (op : IntRelOp)
   | intConvert (op : IntConversion)
+  | vector (operation : VectorOp)
   | floatUnary (width : NumWidth) (op : FloatUnaryOp)
   | floatBinary (width : NumWidth) (op : FloatBinaryOp)
   | floatRel (width : NumWidth) (op : FloatRelOp)
@@ -257,10 +345,25 @@ inductive Instr where
   | memoryInit (memory data : Nat)
   | dataDrop (data : Nat)
   | call (index : Nat)
+  | returnCall (index : Nat)
+  | returnCallIndirect (table typeIdx : Nat)
+  | returnCallRef (typeIdx : Nat)
   | callIndirect (table typeIdx : Nat)
   | refNull (kind : RefKind)
   | refFunc (index : Nat)
   | refIsNull
+  | gcReference (operation : GCReferenceOp)
+  | structNew (typeIdx : Nat) (default : Bool)
+  | structGet (typeIdx fieldIdx : Nat) (signed : Option Bool)
+  | structSet (typeIdx fieldIdx : Nat)
+  | arrayOp (operation : ArrayOp)
+  | refAsNonNull
+  | refTest (nullable : Bool) (heap : RefKind)
+  | refCast (nullable : Bool) (heap : RefKind)
+  | callRef (typeIdx : Nat)
+  | brOnCast (fail : Bool) (depth : Nat) (source target : Types.RefType)
+  | brOnNull (depth : Nat)
+  | brOnNonNull (depth : Nat)
   | tableGet (table : Nat)
   | tableSet (table : Nat)
   | tableSize (table : Nat)
@@ -269,6 +372,9 @@ inductive Instr where
   | tableCopy (destination source : Nat)
   | tableInit (table elem : Nat)
   | elemDrop (elem : Nat)
+  | throw_ (tag : Nat)
+  | throwRef
+  | tryTable (type : BlockType) (catches : List Catch) (body : List Instr)
   | return_
   | block (type : BlockType) (body : List Instr)
   | loop (type : BlockType) (body : List Instr)
@@ -304,6 +410,7 @@ inductive ExternAddr where
   | global (address : GlobalAddr)
   | memory (address : MemAddr)
   | table (address : TableAddr)
+  | tag (address : TagAddr)
   deriving DecidableEq, Repr
 
 structure ExportInst where
@@ -321,6 +428,7 @@ structure ModuleInst where
   datas : List DataAddr := []
   tables : List TableAddr := []
   elems : List ElemAddr := []
+  tags : List TagAddr := []
   definedTypes : List Types.DefinedType := []
   funcTypeIndices : List Nat := []
   deriving DecidableEq, Repr
@@ -343,6 +451,12 @@ inductive AdminInstr where
   | invokeRef (type : FuncType)
   | castDefined (type : Types.DefinedType)
   | invokeDefined (type : Types.DefinedType)
+  | returnInvoke (address : FuncAddr) (type : FuncType)
+  | returnInvokeRef (type : FuncType)
+  | returnInvokeDefined (type : Types.DefinedType)
+  | tailActivation (body : List AdminInstr)
+  | throwing (address : ExnAddr)
+  | handler (catches : List Catch) (body : List AdminInstr)
   deriving BEq, Repr
 
 def values (vs : List Value) : List AdminInstr := vs.map (fun v => .instr (.const v))

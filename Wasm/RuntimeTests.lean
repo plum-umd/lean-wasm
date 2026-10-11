@@ -53,7 +53,7 @@ local infix:50 " ≟ " => sameRuntime
     (values [.i32 1] ++ [AdminInstr.frame 0 {} [instr .drop]])).status ≟ .stuck)
   checkRuntime "branch cannot cross activation" ((run 10 []
     [.label 0 [] [.frame 0 {} [instr (.br 0)]]]).status ≟ .stuck)
-  let inner : Frame := { module := { types := [⟨[], [.i32]⟩] } }
+  let inner : Frame := { module := { types := [.func ⟨[], [.i32]⟩] } }
   let body := instructions [.block (.typeIdx 0) [.const (.i32 8)]]
   checkRuntime "callee type context" ((run 10 [] [.frame 1 inner body]).status ≟ .finished [.i32 8])
   checkRuntime "nested frame contexts" ((run 15 [] [.frame 1 {} [.frame 1 inner body]]).status ≟

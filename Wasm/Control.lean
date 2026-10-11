@@ -54,6 +54,8 @@ inductive ExecStep : TypeContext → List AdminInstr → List AdminInstr → Pro
       ExecStep types (values vs ++ es ++ tail) (values vs ++ es' ++ tail)
   | label : ExecStep types body body' →
       ExecStep types [.label n continuation body] [.label n continuation body']
+  | handler : ExecStep types body body' →
+      ExecStep types [.handler catches body] [.handler catches body']
   | frame : ExecStep state.module.types body body' →
       ExecStep types [.frame n state body] [.frame n state body']
   | localFrame : LocalStep state body state' body' →

@@ -83,8 +83,7 @@ example : SubType.Valid ⟨[⟨[.func true [] [] []], 0⟩], []⟩ 0
   constructor
   · rfl
   · decide
-  · simp [SubType.body]
-  · simp [SubType.body]
+  · simp [SubType.body, CompType.valTypes]
   · simp [SubType.supers]
 
 -- A parent must precede its child, even inside the same recursive group.

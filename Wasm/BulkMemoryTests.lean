@@ -180,7 +180,7 @@ example : BulkInstrTyping [⟨.i64, 0, none⟩, ⟨.i32, 0, none⟩] 0
 example : RuntimeInstrTyping { mems := [⟨.i64, 0, none⟩], dataCount := 1 } []
     (.memoryInit 0 0) [.i64, .i32, .i32] [] :=
   .bulk (.init (memory := ⟨.i64, 0, none⟩) rfl (by decide))
-example : FuncTyping [⟨[], []⟩] [] [] [] 1 ⟨0, [], [.dataDrop 0]⟩ ⟨[], []⟩ :=
+example : FuncTyping [.func ⟨[], []⟩] [] [] [] 1 ⟨0, [], [.dataDrop 0]⟩ ⟨[], []⟩ :=
   .wasm rfl (by decide) (.cons (.bulk (.drop (by decide))) .empty)
 example : DataTyping { mems := [⟨.i32, 0, none⟩] }
     ⟨#[1, 2], .active 0 [.const (.i32 3)]⟩ := by

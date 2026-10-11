@@ -5,6 +5,7 @@ namespace Wasm
 
 inductive ImportDesc where
   | func (typeIdx : Nat)
+  | tag (typeIdx : Nat)
   | global (type : GlobalType)
   | memory (type : MemoryType)
   | table (type : TableType)
@@ -18,6 +19,7 @@ structure Import where
 
 inductive ExternIdx where
   | func (index : Nat)
+  | tag (index : Nat)
   | global (index : Nat)
   | memory (index : Nat)
   | table (index : Nat)
@@ -38,6 +40,7 @@ structure Module where
   types : TypeContext := []
   imports : List Import := []
   funcs : List Func := []
+  tags : List Nat := []
   globals : List Global := []
   mems : List MemoryType := []
   datas : List Data := []
@@ -52,6 +55,15 @@ def Module.importedFuncIndices (module : Module) : List Nat :=
   module.imports.filterMap fun entry => match entry.desc with
     | .func x => some x
     | _ => none
+
+def Module.importedTagIndices (module : Module) : List Nat :=
+  module.imports.filterMap fun entry => match entry.desc with
+    | .tag x => some x
+    | _ => none
+
+def tagSignature? (types : TypeContext) (index : Nat) : Option FuncType := do
+  let ft ← types.func? (index)
+  if ft.results.isEmpty then some ft else none
 
 def Module.importedGlobals (module : Module) : List GlobalType :=
   module.imports.filterMap fun entry => match entry.desc with
@@ -87,10 +99,11 @@ def Module.declaredRefs (module : Module) : List Nat :=
 
 def Module.context? (module : Module) : Option FunctionContext := do
   let resolved ← Types.resolveSection? [] module.typeGroups
-  let imported ← module.importedFuncIndices.mapM fun x => module.types[x]?
-  let defined ← module.funcs.mapM fun function => module.types[function.typeIdx]?
+  let imported ← module.importedFuncIndices.mapM fun x => module.types.func? (x)
+  let defined ← module.funcs.mapM fun function => module.types.func? (function.typeIdx)
+  let tags ← (module.importedTagIndices ++ module.tags).mapM (tagSignature? module.types)
   let context : FunctionContext :=
-    { types := module.types, funcs := imported ++ defined,
+    { types := module.types, funcs := imported ++ defined, tags,
       globals := module.importedGlobals ++ module.globals.map Global.type,
       mems := module.importedMemories ++ module.mems, dataCount := module.datas.length,
       tables := module.importedTables ++ module.tables.map Table.type,
@@ -105,7 +118,8 @@ def Module.referencesInScope (module : Module) : Bool :=
   let count := module.typeGroups.flatten.length
   let val := ValType.referencesInScope count
   let code := instructionsInScope count
-  module.types.all (fun type => type.params.all val && type.results.all val) &&
+  module.types.all (fun type => (Types.embedComposite type).valTypes.all
+    (fun type => (Types.projectVal type).any val)) &&
     module.imports.all (fun entry => match entry.desc with
       | .global type => val type.valType
       | .table type => heapInScope count type.kind
@@ -125,6 +139,7 @@ inductive GlobalSeqTyping : FunctionContext → List Global → Prop where
 
 def ExternIdx.Valid (context : FunctionContext) : ExternIdx → Prop
   | .func x => x < context.funcs.length
+  | .tag x => x < context.tags.length
   | .global x => x < context.globals.length
   | .memory x => x < context.mems.length
   | .table x => x < context.tables.length
@@ -145,7 +160,7 @@ structure ModuleTyping (module : Module) (context : FunctionContext) : Prop wher
       (tables := context.tables) (elems := context.elems)
       (declaredRefs := context.declaredRefs) function ft
       (definedTypes := context.definedTypes) (funcTypeIndices := context.funcTypeIndices)
-      (elemTypes := context.elemTypes)
+      (elemTypes := context.elemTypes) (tags := context.tags)
   data : ∀ segment ∈ module.datas, DataTyping context segment
   exports : ∀ entry ∈ module.exports, entry.desc.Valid context
   export_names : (module.exports.map Export.name).Nodup
@@ -156,7 +171,7 @@ structure ModuleTyping (module : Module) (context : FunctionContext) : Prop wher
   elements : ∀ elem ∈ module.elems, ElemTyping context elem
   type_groups : module.typeGroups ≠ [] →
     Types.TypeSectionValid [] module.typeGroups context.definedTypes ∧
-      module.typeGroups.flatten.map Types.SubType.body = module.types.map Types.embedFunc
+      module.typeGroups.flatten.map Types.SubType.body = module.types.map Types.embedComposite
   reference_scope : module.referencesInScope = true
 
 def Module.Valid (module : Module) : Prop := ∃ context, ModuleTyping module context

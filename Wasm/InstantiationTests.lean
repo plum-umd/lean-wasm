@@ -8,7 +8,7 @@ private def sameInstantiation {α : Type} [BEq α] (actual expected : α) : Bool
 local infix:50 " ≟ " => sameInstantiation
 
 private def fixture : Module :=
-  { types := [⟨[], []⟩],
+  { types := [.func ⟨[], []⟩],
     imports := [⟨"env", "offset", .global ⟨.const, .i32⟩⟩,
       ⟨"env", "memory", .memory ⟨.i32, 1, some 2⟩⟩],
     globals := [⟨⟨.const, .i32⟩, [.globalGet 0, .const (.i32 1), .binop .i32 .add]⟩,
@@ -21,7 +21,7 @@ private def fixture : Module :=
       ⟨"result", .global 2⟩] }
 
 private def fixtureContext : FunctionContext :=
-  { types := [⟨[], []⟩], funcs := [⟨[], []⟩],
+  { types := [.func ⟨[], []⟩], funcs := [⟨[], []⟩],
     globals := [⟨.const, .i32⟩, ⟨.const, .i32⟩, ⟨.var, .i32⟩],
     mems := [⟨.i32, 1, some 2⟩, ⟨.i64, 0, some 2⟩], dataCount := 2, declaredRefs := [0] }
 
@@ -78,22 +78,22 @@ private theorem fixtureValid : fixture.Valid := by
     rfl
 
 private def singleFunctionModule (body : List Instr) : Module :=
-  { types := [⟨[], []⟩], funcs := [⟨0, [], body⟩], start := some 0,
+  { types := [.func ⟨[], []⟩], funcs := [⟨0, [], body⟩], start := some 0,
     exports := [⟨"run", .func 0⟩] }
 
 private theorem singleFunctionValid
     (scope : instructionsInScope 0 body = true)
     (hi : (Func.mk 0 [] body).Initialized ⟨[], []⟩)
-    (hb : RuntimeSeqTyping { types := [⟨[], []⟩], funcs := [⟨[], []⟩], returns := some [], declaredRefs := [0] }
+    (hb : RuntimeSeqTyping { types := [.func ⟨[], []⟩], funcs := [⟨[], []⟩], returns := some [], declaredRefs := [0] }
       [[]] body [] []) : (singleFunctionModule body).Valid := by
-  refine ⟨{ types := [⟨[], []⟩], funcs := [⟨[], []⟩], declaredRefs := [0] },
+  refine ⟨{ types := [.func ⟨[], []⟩], funcs := [⟨[], []⟩], declaredRefs := [0] },
     ⟨rfl, by simp [singleFunctionModule, Module.importedMemories],
       by simp [singleFunctionModule], .empty, ?_,
       by simp [singleFunctionModule], ?_, by simp [singleFunctionModule], ?_,
       by simp [singleFunctionModule, Module.importedTables],
       by simp [singleFunctionModule], by simp [singleFunctionModule],
       by simp [singleFunctionModule],
-      by simpa [Module.referencesInScope, singleFunctionModule] using scope⟩⟩
+      by simpa [Module.referencesInScope, Types.embedComposite, Types.CompType.valTypes, Types.projectVal, Types.embedVal, Types.embedFunc, singleFunctionModule] using scope⟩⟩
   · intro function hf
     simp [singleFunctionModule] at hf
     subst function
@@ -243,7 +243,7 @@ private def instantiationTests : IO Unit := do
   checkInstantiation "earlier drop retained later segment retained"
     (seqResult.execution.state.store.datas ≟ [⟨#[7]⟩, ⟨#[]⟩, ⟨#[12]⟩])
   let mixed : Module :=
-    { types := [⟨[], []⟩], imports := [⟨"env", "f", .func 0⟩,
+    { types := [.func ⟨[], []⟩], imports := [⟨"env", "f", .func 0⟩,
       ⟨"env", "m", .memory ⟨.i32, 1, none⟩⟩, ⟨"env", "g", .global ⟨.const, .i32⟩⟩,
       ⟨"env", "f2", .func 0⟩] }
   let .ok imported := checkedPrepareInstantiation store mixed
@@ -269,7 +269,7 @@ private def instantiationTests : IO Unit := do
       | .error .resourceLimit => true
       | _ => false)
   let forward : Module :=
-    { types := [⟨[], []⟩], funcs := [⟨0, [], [.call 1]⟩, ⟨0, [], [.nop]⟩], start := some 0 }
+    { types := [.func ⟨[], []⟩], funcs := [⟨0, [], [.call 1]⟩, ⟨0, [], [.nop]⟩], start := some 0 }
   let .ok preparedForward := checkedPrepareInstantiation store forward []
     | throw (IO.userError "forward call allocation failed")
   checkInstantiation "forward function call"
@@ -277,9 +277,9 @@ private def instantiationTests : IO Unit := do
   let badFunc : Module := { imports := [⟨"env", "f", .func 0⟩] }
   checkInstantiation "invalid imported type index" (badFunc.context? ≟ none)
   checkInstantiation "missing function import address"
-    (!(decide (ImportMatches store [⟨[], []⟩] (.func 0) (.func ⟨99⟩))))
+    (!(decide (ImportMatches store [.func ⟨[], []⟩] (.func 0) (.func ⟨99⟩))))
   checkInstantiation "function import signature mismatch"
-    (!(decide (ImportMatches store [⟨[.i32], []⟩] (.func 0) (.func ⟨0⟩))))
+    (!(decide (ImportMatches store [.func ⟨[.i32], []⟩] (.func 0) (.func ⟨0⟩))))
   checkInstantiation "memory import missing required maximum"
     (!(decide (ImportMatches { mems := [{ memory with type := ⟨.i32, 1, none⟩ }] } []
       (.memory ⟨.i32, 1, some 2⟩) (.memory ⟨0⟩))))

@@ -1,6 +1,8 @@
+import Wasm.Vectors
 import Wasm.Text.SExpr
 import Wasm.Text.Float
 import Wasm.Module
+import Wasm.TypeClosure
 
 namespace Wasm.Text
 
@@ -53,36 +55,98 @@ def integer (width : Nat) (s : String) : Result Int := do
     throw (.invalid "integer literal out of range")
   return if negative then -(Int.ofNat n) else Int.ofNat n
 
-private def heapType : String → Result RefKind
+private def heapType (kind : String) (names : List (String × Nat) := []) : Result RefKind :=
+  match kind with
   | "func" => .ok .func
   | "extern" => .ok .extern
-  | _ => .error (.unsupported "heap type")
+  | "nofunc" => .ok .nofunc
+  | "noextern" => .ok .noextern
+  | "exn" => .ok .exn
+  | "noexn" => .ok .noexn
+  | "any" => .ok .any
+  | "eq" => .ok .eq
+  | "i31" => .ok .i31
+  | "struct" => .ok .struct_
+  | "array" => .ok .array
+  | "none" => .ok .none
+  | _ =>
+    if kind.startsWith "$" then
+      match names.lookup kind with
+      | some x => .ok (.typeIdx x)
+      | none => .error (.invalid s!"unknown type identifier {kind}")
+    else if (kind.toList.head?.map Char.isDigit).getD false then do
+      let x ← magnitude kind
+      if x ≥ 2^32 then throw (.invalid "type index exceeds u32")
+      return .typeIdx x
+    else if ["any", "eq", "i31", "struct", "array", "none", "exn", "noexn"].contains kind then
+      .error (.unsupported "heap type")
+    else .error (.invalid s!"unknown heap type {kind}")
+
+def vectorShape (shape : String) : Option Nat :=
+  match shape with
+  | "i8x16" => some 8 | "i16x8" => some 16
+  | "i32x4" | "f32x4" => some 32
+  | "i64x2" | "f64x2" => some 64
+  | _ => none
+
+def vectorLiteral (shape : String) (lanes : List SExpr) : Result Value := do
+  let some width := vectorShape shape | throw (.invalid "invalid vector lane shape")
+  if lanes.length != 128 / width then throw (.invalid "incorrect vector lane count")
+  let bits ← lanes.mapM fun lane => do
+    let .atom text := lane | throw (.invalid "invalid vector lane literal")
+    if shape.startsWith "f" then
+      let value ← (floatLiteral (if width == 32 then .w32 else .w64) text).mapError Error.invalid
+      return value.unsigned
+    else return vectorWrap width (← integer width text)
+  return .v128 (BitVec.ofNat 128 (vectorPack width bits))
 
 def constant : SExpr → Result Value
+  | .list (.atom "v128.const" :: .atom shape :: lanes) => vectorLiteral shape lanes
   | .list [.atom "i32.const", .atom s] => do return .i32 (BitVec.ofInt 32 (← integer 32 s))
   | .list [.atom "i64.const", .atom s] => do return .i64 (BitVec.ofInt 64 (← integer 64 s))
   | .list [.atom "f32.const", .atom s] => (floatLiteral .w32 s).mapError Error.invalid
   | .list [.atom "f64.const", .atom s] => (floatLiteral .w64 s).mapError Error.invalid
   | .list [.atom "ref.null", .atom kind] => do return .ref (.null (← heapType kind))
+  | .list [.atom "ref.host", .atom id] => do return .ref (.host (← magnitude id))
   | .list [.atom "ref.extern", .atom id] => do return .ref (.extern (← magnitude id))
   | _ => .error (.unsupported "script constant")
 
-private def valType : SExpr → Result ValType
+private def valType (expr : SExpr) (typeNames : List (String × Nat) := []) : Result ValType :=
+  match expr with
+  | .atom "v128" => .ok .v128
   | .atom "i32" => .ok .i32
   | .atom "i64" => .ok .i64
   | .atom "f32" => .ok .f32
   | .atom "f64" => .ok .f64
   | .atom "funcref" => .ok (.ref .func)
   | .atom "externref" => .ok (.ref .extern)
-  | .list [.atom "ref", .atom "null", .atom kind] => do return .ref (← heapType kind)
-  | _ => .error (.unsupported "value type")
+  | .atom "nullfuncref" => .ok (.ref .nofunc)
+  | .atom "nullexternref" => .ok (.ref .noextern)
+  | .atom "exnref" => .ok (.ref .exn)
+  | .atom "nullexnref" => .ok (.ref .noexn)
+  | .atom "anyref" => .ok (.ref .any)
+  | .atom "eqref" => .ok (.ref .eq)
+  | .atom "i31ref" => .ok (.ref .i31)
+  | .atom "structref" => .ok (.ref .struct_)
+  | .atom "arrayref" => .ok (.ref .array)
+  | .atom "nullref" => .ok (.ref .none)
+  | .list [.atom "ref", .atom "null", .atom kind] => do return .ref (← heapType kind typeNames)
+  | .list [.atom "ref", .atom kind] => do return .refNonNull (← heapType kind typeNames)
+  | .atom kind =>
+    if ["v128", "anyref", "eqref", "i31ref", "structref", "arrayref", "nullref",
+        "exnref", "nullexnref"].contains kind then .error (.unsupported "value type")
+    else .error (.invalid s!"unknown value type {kind}")
+  | _ => .error (.invalid "value type syntax")
 
 private def index (names : List (String × Nat)) (s : String) : Result Nat :=
   if s.startsWith "$" then
     match names.lookup s with
     | some n => .ok n
     | none => .error (.invalid s!"unknown identifier {s}")
-  else magnitude s
+  else do
+    let n ← magnitude s
+    if n ≥ 2^32 then throw (.invalid "index exceeds u32")
+    return n
 
 private def floatInstruction (op : String) : Option Instr := do
   let [type, suffix] := op.splitOn "." | none
@@ -127,9 +191,34 @@ private def floatOperation (width : NumWidth) (suffix : String) : Result Instr :
     if sign == "s" || sign == "u" then
       return .floatConvert (.convert width integer (sign == "s"))
   | _ => pure ()
-  throw (.unsupported s!"float instruction {suffix}")
+  throw (.invalid s!"unknown float instruction {suffix}")
+
+/-- Recognized instruction families outside the supported scalar fragment. -/
+private def unsupportedInstruction (op : String) : Bool :=
+  (!op.contains '/') && (["call_ref", "return_call", "return_call_indirect", "return_call_ref", "try_table",
+    "throw", "throw_ref", "br_on_null", "br_on_non_null", "ref.as_non_null", "ref.eq",
+    "ref.test", "ref.cast", "br_on_cast", "br_on_cast_fail", "any.convert_extern",
+    "extern.convert_any", "ref.i31", "i31.get_s", "i31.get_u",
+    "struct.new", "struct.new_default", "struct.get", "struct.get_s", "struct.get_u",
+    "struct.set", "array.new", "array.new_default", "array.new_fixed", "array.new_data",
+    "array.new_elem", "array.get", "array.get_s", "array.get_u", "array.set", "array.len",
+    "array.fill", "array.copy", "array.init_data", "array.init_elem"].contains op ||
+    ["memory.atomic.", "i32.atomic.", "i64.atomic.", "atomic."].any
+        (fun family => op.startsWith family))
 
 private def operation (op : String) : Result Instr := do
+  match op with
+  | "ref.i31" => return .gcReference .i31New
+  | "i31.get_s" => return .gcReference .i31GetS
+  | "i31.get_u" => return .gcReference .i31GetU
+  | "ref.eq" => return .gcReference .eq
+  | "any.convert_extern" => return .gcReference .anyConvertExtern
+  | "extern.convert_any" => return .gcReference .externConvertAny
+  | _ => pure ()
+  if op == "array.len" then return .arrayOp .len
+  if op == "ref.as_non_null" then return .refAsNonNull
+  if op == "throw_ref" then return .throwRef
+  if unsupportedInstruction op then throw (.unsupported s!"instruction {op}")
   if let some instr := floatInstruction op then return instr
   match op with
   | "nop" => return .nop
@@ -148,9 +237,11 @@ private def operation (op : String) : Result Instr := do
   | "i64.extend32_s" => return .intConvert .extendI64_32S
   | _ => pure ()
   let parts := op.splitOn "."
-  let [typeName, suffix] := parts | throw (.unsupported s!"instruction {op}")
+  let [typeName, suffix] := parts | throw (.invalid s!"unknown instruction {op}")
   if typeName == "f32" then return ← floatOperation .w32 suffix
   if typeName == "f64" then return ← floatOperation .w64 suffix
+  if typeName != "i32" && typeName != "i64" then
+    throw (.invalid s!"unknown instruction {op}")
   let t ← valType (.atom typeName)
   match suffix with
   | "add" => return .binop t .add
@@ -182,9 +273,9 @@ private def operation (op : String) : Result Instr := do
   | "gt_u" => return .intRel t .gtU
   | "ge_s" => return .intRel t .geS
   | "ge_u" => return .intRel t .geU
-  | _ => throw (.unsupported s!"instruction {op}")
+  | _ => throw (.invalid s!"unknown instruction {op}")
 
-private def immediate (locals funcs : List (String × Nat)) (op arg : String) :
+private def immediate (locals funcs typeNames : List (String × Nat)) (op arg : String) :
     Result Instr := do
   match op with
   | "i32.const" => return .const (.i32 (BitVec.ofInt 32 (← integer 32 arg)))
@@ -195,23 +286,30 @@ private def immediate (locals funcs : List (String × Nat)) (op arg : String) :
   | "local.set" => return .localSet (← index locals arg)
   | "local.tee" => return .localTee (← index locals arg)
   | "call" => return .call (← index funcs arg)
+  | "return_call" => return .returnCall (← index funcs arg)
   | "ref.func" => return .refFunc (← index funcs arg)
-  | "ref.null" => return .refNull (← heapType arg)
-  | _ => throw (.unsupported s!"instruction {op}")
+  | "ref.null" => return .refNull (← heapType arg typeNames)
+  | _ => throw (.invalid s!"unknown instruction {op}")
 
 private def hasImmediate (op : String) : Bool :=
   ["i32.const", "i64.const", "f32.const", "f64.const", "local.get", "local.set",
-    "local.tee", "call",
+    "local.tee", "call", "return_call",
     "ref.func", "ref.null"].contains op
 
-abbrev ParseM := StateT (List FuncType) Result
+structure ParseState where
+  types : TypeContext := []
+  groups : List Types.RecType := []
+  tagNames : List (String × Nat) := []
+  fieldNames : List (Nat × List (String × Nat)) := []
+
+abbrev ParseM := StateT ParseState Result
 
 private def depth (labels : List (Option String)) (s : String) : Result Nat :=
   if s.startsWith "$" then
     match (labels.zipIdx.find? (fun p => p.1 == some s)) with
     | some (_, n) => .ok n
     | none => .error (.invalid s!"unknown label {s}")
-  else magnitude s
+  else index [] s
 
 private def isIndex (s : String) : Bool :=
   s.startsWith "$" || (s.toList.head?.map Char.isDigit).getD false
@@ -224,23 +322,35 @@ private def closingLabel (label : Option String) (xs : List SExpr) : Result (Lis
     else return xs
   | _ => return xs
 
-private def bindings (xs : List SExpr) (offset : Nat) :
+private def bindings (xs : List SExpr) (offset : Nat)
+    (typeNames : List (String × Nat) := []) :
     Result (List ValType × List (String × Nat)) := do
   match xs with
   | .atom id :: rest =>
     if id.startsWith "$" then
       let [t] := rest | throw (.invalid "named binding must have one type")
-      return ([← valType t], [(id, offset)])
-    else return (← xs.mapM valType, [])
-  | _ => return (← xs.mapM valType, [])
+      return ([← valType t typeNames], [(id, offset)])
+    else return (← xs.mapM (fun t => valType t typeNames), [])
+  | _ => return (← xs.mapM (fun t => valType t typeNames), [])
 
 private def intern (ft : FuncType) : ParseM Nat := do
-  let types ← get
-  match types.zipIdx.find? (fun p => p.1 == ft) with
-  | some (_, n) => return n
+  let state : ParseState ← get
+  let group : Types.RecType := [.func true []
+    (ft.params.map Types.embedVal) (ft.results.map Types.embedVal)]
+  let matched : Option Nat := do
+    let previous ← Types.resolveSection? [] state.groups
+    let [target] ← group.resolve? previous | none
+    let (_, index) ← previous.zipIdx.find? fun (p : Types.DefinedType × Nat) =>
+      decide (p.1 = target)
+    return index
+  let matched := matched.orElse fun _ =>
+    if (Types.resolveSection? [] state.groups).isNone then
+      (state.types.zipIdx.find? (fun (p : CompositeType × Nat) => p.1 == CompositeType.func ft)).map Prod.snd else none
+  match matched with
+  | some index => return index
   | none =>
-    set (types ++ [ft])
-    return types.length
+    set {state with types := state.types ++ [CompositeType.func ft], groups := state.groups ++ [group]}
+    return state.types.length
 
 private def typeUse (typeNames : List (String × Nat)) (xs : List SExpr) :
     ParseM (FuncType × Nat × List (String × Nat) × List SExpr) := do
@@ -260,7 +370,7 @@ private def typeUse (typeNames : List (String × Nat)) (xs : List SExpr) :
     match rest with
     | .list (.atom "param" :: ts) :: tail =>
       if resultSeen then throw (.invalid "parameter after result")
-      let (ps, ns) ← liftM (bindings ts params.length)
+      let (ps, ns) ← liftM (bindings ts params.length typeNames)
       params := params ++ ps
       names := names ++ ns
       inlineSeen := true
@@ -268,20 +378,31 @@ private def typeUse (typeNames : List (String × Nat)) (xs : List SExpr) :
     | .list (.atom "result" :: ts) :: tail =>
       resultSeen := true
       inlineSeen := true
-      results := results ++ (← liftM (ts.mapM valType))
+      results := results ++ (← liftM (ts.mapM (fun t => valType t typeNames)))
       rest := tail
     | _ => scanning := false
   let ft : FuncType := ⟨params, results⟩
   let (ft, n) ← match ref with
     | some n => do
-      match (← get)[n]? with
+      match (← get).types.func? (n) with
       | some declared =>
-        if inlineSeen && ft != declared then throw (.invalid "inline type does not match type use")
+        let state : ParseState ← get
+        let matchesSignature := match Types.resolveSection? [] state.groups with
+          | some resolved => match ft.close? resolved, declared.close? resolved with
+            | some actual, some expected => decide (actual = expected)
+            | _, _ => ft == declared
+          | none => ft == declared
+        if inlineSeen && !matchesSignature then
+          throw (.invalid "inline type does not match type use")
         pure (declared, n)
       | none =>
-        -- Inferred signatures must not accidentally bind an unknown source type index.
-        -- Preserve an out-of-range index so executable validation reports the error.
-        pure (ft, 2^32 + n)
+        if (← get).types[n]?.isSome then
+          -- Retain the composite index so validation rejects its function use.
+          pure (ft, n)
+        else
+          if inlineSeen then throw (.invalid "inline type requires a known type index")
+          -- Inferred signatures must not accidentally bind an unknown source type index.
+          pure (ft, 2^32 + n)
     | none => pure (ft, ← intern ft)
   if (names.map Prod.fst).eraseDups.length != names.length then
     throw (.invalid "duplicate parameter identifier")
@@ -360,6 +481,31 @@ private def memarg (bytes : Nat) (args : List SExpr) : Result (MemArg × List SE
 private def scalar (locals funcs : List (String × Nat)) (labels : List (Option String))
     (typeNames tableNames elemNames globalNames memNames dataNames : List (String × Nat))
     (op : String) (args : List SExpr) : ParseM (Instr × List SExpr) := do
+  if op == "v128.const" then
+    let .atom shape :: rest := args | throw (.invalid "missing vector lane shape")
+    let some width := vectorShape shape | throw (.invalid "invalid vector lane shape")
+    let count := 128 / width
+    return (.const (← liftM (vectorLiteral shape (rest.take count))), rest.drop count)
+  if let some opcode := VectorOpcode.ofName op then
+    let laneMemory := opcode.isMemory && op.endsWith "lane"
+    let explicitMemory := match args with
+      | .atom first :: .atom second :: _ => first.startsWith "$" || isIndex second ||
+          second.startsWith "offset=" || second.startsWith "align="
+      | .atom first :: _ => first.startsWith "$"
+      | _ => false
+    let (memory, args) ← if opcode.isMemory && (!laneMemory || explicitMemory) then
+      liftM (memoryIndex memNames args) else pure (0, args)
+    let (arg, args) ← if opcode.isMemory then liftM (memarg opcode.memoryBytes args)
+      else pure ({}, args)
+    let count := if opcode == .i8x16_shuffle then 16
+      else if op.endsWith "lane" || (op.splitOn "extract_lane").length > 1 then 1 else 0
+    let lanes ← (args.take count).mapM fun expr => do
+      let .atom text := expr | throw (.invalid "missing vector lane immediate")
+      let n ← liftM (index [] text)
+      if n ≥ 256 then throw (.invalid "lane index exceeds u8")
+      pure n
+    if lanes.length != count then throw (.invalid "missing vector lane immediate")
+    return (.vector ⟨opcode, lanes, memory, arg⟩, args.drop count)
   if let some load := loadOp op then
     let (memory, args) ← liftM (memoryIndex memNames args)
     let (arg, rest) ← liftM (memarg load.bytes args)
@@ -398,14 +544,81 @@ private def scalar (locals funcs : List (String × Nat)) (labels : List (Option 
     let .atom id :: rest := args | throw (.invalid s!"missing immediate for {op}")
     let idx ← liftM (index globalNames id)
     return (if op == "global.get" then .globalGet idx else .globalSet idx, rest)
-  if op == "call_indirect" then
+  if op == "array.new" || op == "array.new_default" then
+    let .atom id :: rest := args | throw (.invalid "missing array type")
+    return (.arrayOp (.new_ (← liftM (index typeNames id)) (op == "array.new_default")), rest)
+  if op == "array.new_fixed" then
+    let .atom id :: .atom count :: rest := args | throw (.invalid "missing array count")
+    return (.arrayOp (.newFixed (← liftM (index typeNames id)) (← liftM (index [] count))), rest)
+  if ["array.get", "array.get_s", "array.get_u", "array.set", "array.fill"].contains op then
+    let .atom id :: rest := args | throw (.invalid "missing array type")
+    let type ← liftM (index typeNames id)
+    let operation := if op == "array.set" then ArrayOp.set type
+      else if op == "array.fill" then ArrayOp.fill type
+      else ArrayOp.get type
+        (if op == "array.get_s" then some true else if op == "array.get_u" then some false
+          else none)
+    return (.arrayOp operation, rest)
+  if op == "array.copy" then
+    let .atom dst :: .atom src :: rest := args | throw (.invalid "missing array copy types")
+    return (.arrayOp (.copy (← liftM (index typeNames dst)) (← liftM (index typeNames src))), rest)
+  if ["array.new_data", "array.new_elem", "array.init_data", "array.init_elem"].contains op then
+    let .atom id :: .atom segment :: rest := args | throw (.invalid "missing array segment")
+    let type ← liftM (index typeNames id)
+    let operation ← if op == "array.new_data" || op == "array.init_data" then do
+      let data ← liftM (index dataNames segment)
+      pure (if op == "array.new_data" then ArrayOp.newData type data else .initData type data)
+    else do
+      let elem ← liftM (index elemNames segment)
+      pure (if op == "array.new_elem" then ArrayOp.newElem type elem else .initElem type elem)
+    return (.arrayOp operation, rest)
+  if op == "struct.new" || op == "struct.new_default" then
+    let .atom id :: rest := args | throw (.invalid "missing struct type")
+    return (.structNew (← liftM (index typeNames id)) (op == "struct.new_default"), rest)
+  if ["struct.get", "struct.get_s", "struct.get_u", "struct.set"].contains op then
+    let .atom id :: .atom field :: rest := args | throw (.invalid "missing struct field")
+    let type ← liftM (index typeNames id)
+    let names := (((← get).fieldNames.find? (fun entry => entry.1 == type)).map Prod.snd).getD []
+    let field ← liftM (index names field)
+    let instr := if op == "struct.set" then Instr.structSet type field
+      else Instr.structGet type field
+        (if op == "struct.get_s" then some true else if op == "struct.get_u" then some false
+          else none)
+    return (instr, rest)
+  if op == "br_on_cast" || op == "br_on_cast_fail" then
+    let .atom id :: source :: target :: rest := args |
+      throw (.invalid "missing cast branch immediate")
+    let toRef (expr : SExpr) : ParseM Types.RefType := do
+      match ← liftM (valType expr typeNames) with
+      | .ref heap => return ⟨true, heap⟩
+      | .refNonNull heap => return ⟨false, heap⟩
+      | _ => throw (.invalid "cast branch requires reference types")
+    return (.brOnCast (op == "br_on_cast_fail") (← liftM (depth labels id))
+      (← toRef source) (← toRef target), rest)
+  if op == "ref.test" || op == "ref.cast" then
+    let type :: rest := args | throw (.invalid "missing reference type")
+    let target ← liftM (valType type typeNames)
+    let (nullable, heap) ← match target with
+      | .ref heap => pure (true, heap)
+      | .refNonNull heap => pure (false, heap)
+      | _ => throw (.invalid "cast requires a reference type")
+    return (if op == "ref.test" then .refTest nullable heap else .refCast nullable heap, rest)
+  if op == "throw" then
+    let .atom id :: rest := args | throw (.invalid "throw requires a tag")
+    return (.throw_ (← liftM (index (← get).tagNames id)), rest)
+  if op == "call_ref" || op == "return_call_ref" then
+    let .atom id :: rest := args | throw (.invalid "call_ref requires a type index")
+    let x ← liftM (index typeNames id)
+    return (if op == "call_ref" then .callRef x else .returnCallRef x, rest)
+  if op == "call_indirect" || op == "return_call_indirect" then
     let (table, args) ← match args with
       | .atom id :: rest =>
         if isIndex id then pure (← liftM (index tableNames id), rest) else pure (0, args)
       | _ => pure (0, args)
     let (_, type, names, rest) ← typeUse typeNames args
     if !names.isEmpty then throw (.invalid "indirect call parameters cannot have identifiers")
-    return (.callIndirect table type, rest)
+    return (if op == "call_indirect" then .callIndirect table type
+      else .returnCallIndirect table type, rest)
   if ["table.get", "table.set", "table.size", "table.grow", "table.fill"].contains op then
     let (table, rest) ← match args with
       | .atom id :: rest =>
@@ -441,13 +654,15 @@ private def scalar (locals funcs : List (String × Nat)) (labels : List (Option 
     let .atom id :: rest := args | throw (.invalid "elem.drop requires an element index")
     return (.elemDrop (← liftM (index elemNames id)), rest)
   if op == "br_table" then return ← liftM (branchTable labels args)
-  if op == "br" || op == "br_if" then
+  if ["br", "br_if", "br_on_null", "br_on_non_null"].contains op then
     let .atom arg :: rest := args | throw (.invalid "branch requires a label")
     let n ← liftM (depth labels arg)
-    return (if op == "br" then .br n else .brIf n, rest)
+    let instr := if op == "br" then Instr.br n else if op == "br_if" then Instr.brIf n
+      else if op == "br_on_null" then Instr.brOnNull n else Instr.brOnNonNull n
+    return (instr, rest)
   if hasImmediate op then
     let .atom arg :: rest := args | throw (.invalid s!"missing immediate for {op}")
-    return (← liftM (immediate locals funcs op arg), rest)
+    return (← liftM (immediate locals funcs typeNames op arg), rest)
   if op == "select" then
     match args with
     | .list (.atom "result" :: _) :: _ =>
@@ -456,12 +671,30 @@ private def scalar (locals funcs : List (String × Nat)) (labels : List (Option 
       while true do
         match rest with
         | .list (.atom "result" :: ts) :: tail =>
-          types := types ++ (← liftM (ts.mapM valType))
+          types := types ++ (← liftM (ts.mapM (fun t => valType t typeNames)))
           rest := tail
         | _ => break
       return (.select (some types), rest)
     | _ => pure ()
   return (← liftM (operation op), args)
+
+private def catchClauses (labels : List (Option String)) (xs : List SExpr) :
+    ParseM (List Catch × List SExpr) := do
+  let mut catches := []
+  let mut rest := xs
+  while true do
+    match rest with
+    | .list [.atom op, .atom tag, .atom target] :: tail =>
+      if op != "catch" && op != "catch_ref" then break
+      catches := catches ++ [.tag (← liftM (index (← get).tagNames tag))
+        (← liftM (depth labels target)) (op == "catch_ref")]
+      rest := tail
+    | .list [.atom op, .atom target] :: tail =>
+      if op != "catch_all" && op != "catch_all_ref" then break
+      catches := catches ++ [.all (← liftM (depth labels target)) (op == "catch_all_ref")]
+      rest := tail
+    | _ => break
+  return (catches, rest)
 
 mutual
   private partial def sequence (locals funcs : List (String × Nat))
@@ -475,8 +708,10 @@ mutual
       if op == "end" || op == "else" then
         if stop then return ([], rest, some op)
         else throw (.invalid s!"unexpected {op}")
-      if op == "block" || op == "loop" || op == "if" then
+      if op == "block" || op == "loop" || op == "if" || op == "try_table" then
         let (label, bt, rest) ← header typeNames rest
+        let (catches, rest) ← if op == "try_table" then catchClauses labels rest
+          else pure ([], rest)
         let (yes, rest, term) ←
           sequence locals funcs (label :: labels)
               typeNames tableNames elemNames globalNames memNames dataNames true rest
@@ -491,7 +726,8 @@ mutual
           if term != some "end" then throw (.invalid s!"{op} requires end")
           pure ([], rest)
         let instr := if op == "block" then Instr.block bt yes
-          else if op == "loop" then Instr.loop bt yes else Instr.if_ bt yes no
+          else if op == "loop" then Instr.loop bt yes
+          else if op == "try_table" then Instr.tryTable bt catches yes else Instr.if_ bt yes no
         let (tail, rest, term) ←
           sequence locals funcs labels
             typeNames tableNames elemNames globalNames memNames dataNames stop rest
@@ -524,8 +760,11 @@ mutual
         sequence locals funcs ls
           typeNames tableNames elemNames globalNames memNames dataNames false xs
       pure code
-    if op == "block" || op == "loop" || op == "if" then
+    if op == "block" || op == "loop" || op == "if" || op == "try_table" then
       let (label, bt, args) ← header typeNames args
+      if op == "try_table" then
+        let (catches, args) ← catchClauses labels args
+        return [.tryTable bt catches (← all (label :: labels) args)]
       if op == "block" || op == "loop" then
         let code ← all (label :: labels) args
         return [if op == "block" then .block bt code else .loop bt code]
@@ -538,6 +777,8 @@ mutual
         | [] => pure []
         | [.list (.atom "else" :: no)] => pure no
         | _ => throw (.invalid "folded if arm syntax")
+      if conditions.any (fun | .list _ => false | _ => true) then
+        throw (.invalid "folded if requires folded operands")
       let condition ← all labels conditions
       let yes ← all (label :: labels) yes
       let no ← all (label :: labels) no
@@ -545,6 +786,8 @@ mutual
     let (instr, args) ←
       scalar locals funcs labels
         typeNames tableNames elemNames globalNames memNames dataNames op args
+    if args.any (fun | .list _ => false | _ => true) then
+      throw (.invalid "folded instruction requires folded operands")
     return (← all labels args) ++ [instr]
 end
 
@@ -569,7 +812,7 @@ private def function (fields : List SExpr)
   while true do
     match rest with
     | .list (.atom "local" :: xs) :: tail =>
-      let (ts, ns) ← liftM (bindings xs (ft.params.length + locals.length))
+      let (ts, ns) ← liftM (bindings xs (ft.params.length + locals.length) typeNames)
       locals := locals ++ ts
       names := names ++ ns
       rest := tail
@@ -581,7 +824,8 @@ private def function (fields : List SExpr)
       typeNames tableNames elemNames globalNames memNames dataNames false rest
   return (⟨typeIndex, locals, code⟩, exports)
 
-private def declaration (xs : List SExpr) : Result (Option String × FuncType) := do
+private def declaration (xs : List SExpr) (typeNames : List (String × Nat) := []) :
+    Result (Option String × FuncType) := do
   let (id, xs) := match xs with
     | .atom id :: rest => if id.startsWith "$" then (some id, rest) else (none, xs)
     | _ => (none, xs)
@@ -595,38 +839,129 @@ private def declaration (xs : List SExpr) : Result (Option String × FuncType) :
     match field with
     | .list (.atom "param" :: xs) =>
       if resultSeen then throw (.invalid "parameter after result")
-      let (ts, ns) ← bindings xs params.length
+      let (ts, ns) ← bindings xs params.length typeNames
       params := params ++ ts
       names := names ++ ns
     | .list (.atom "result" :: xs) =>
       resultSeen := true
-      results := results ++ (← xs.mapM valType)
+      results := results ++ (← xs.mapM (fun t => valType t typeNames))
     | _ => throw (.invalid "function type syntax")
   if (names.map Prod.fst).eraseDups.length != names.length then
     throw (.invalid "duplicate parameter identifier")
   return (id, ⟨params, results⟩)
 
-private def refKind : SExpr → Result RefKind
-  | .atom "funcref" => .ok .func
-  | .atom "externref" => .ok .extern
-  | .list [.atom "ref", .atom "null", .atom "func"] => .ok .func
-  | .list [.atom "ref", .atom "null", .atom "extern"] => .ok .extern
-  | _ => .error (.unsupported "table reference type")
+private def groupFields : SExpr → Result (Option (List (List SExpr)))
+  | .list (.atom "type" :: fields) => .ok (some [fields])
+  | .list (.atom "rec" :: fields) => do
+    let types ← fields.mapM fun
+      | .list (.atom "type" :: fields) => pure fields
+      | _ => throw (.invalid "recursive group requires type declarations")
+    return some types
+  | _ => .ok none
 
-private def elemExpressions (funcs globals : List (String × Nat)) (xs : List SExpr) :
-    Result (List (List Instr)) :=
-  xs.mapM fun
-    | .atom id => do return [.refFunc (← index funcs id)]
-    | .list [.atom "ref.func", .atom id] => do return [.refFunc (← index funcs id)]
-    | .list [.atom "ref.null", .atom kind] => do return [.refNull (← heapType kind)]
-    | .list [.atom "global.get", .atom id] => do return [.globalGet (← index globals id)]
-    | .list [.atom "item", .list [.atom "ref.func", .atom id]] =>
-      do return [.refFunc (← index funcs id)]
-    | .list [.atom "item", .list [.atom "ref.null", .atom kind]] =>
-      do return [.refNull (← heapType kind)]
-    | .list [.atom "item", .list [.atom "global.get", .atom id]] =>
-      do return [.globalGet (← index globals id)]
-    | _ => throw (.unsupported "element initializer")
+private def storageType (expr : SExpr) (names : List (String × Nat)) : Result Types.StorageType :=
+  match expr with
+  | .atom "i8" => .ok .i8
+  | .atom "i16" => .ok .i16
+  | _ => do return .val (Types.embedVal (← valType expr names))
+
+private def fieldType (expr : SExpr) (names : List (String × Nat)) : Result Types.FieldType := do
+  match expr with
+  | .list [.atom "mut", type] => return .mk (← storageType type names) true
+  | _ => return .mk (← storageType expr names) false
+
+private def compositeDeclaration (body : SExpr) (names : List (String × Nat)) :
+    Result (CompositeType × List (String × Nat)) := do
+  match body with
+  | .list (.atom "struct" :: declarations) =>
+    let mut fields := []
+    let mut bindings := []
+    for declaration in declarations do
+      let .list (.atom "field" :: types) := declaration |
+        throw (.invalid "struct requires field declarations")
+      let (id, types) := match types with
+        | .atom id :: rest => if id.startsWith "$" then (some id, rest) else (none, types)
+        | _ => (none, types)
+      if id.isSome && types.length != 1 then throw (.invalid "named field requires one type")
+      if let some id := id then bindings := bindings ++ [(id, fields.length)]
+      fields := fields ++ (← types.mapM (fun type => fieldType type names))
+    if (bindings.map Prod.fst).eraseDups.length != bindings.length then
+      throw (.invalid "duplicate field identifier")
+    return (.struct_ fields, bindings)
+  | .list [.atom "array", type] => return (.array (← fieldType type names), [])
+  | _ =>
+    let (_, signature) ← declaration [body] names
+    return (.func signature, [])
+
+private def subtypeDeclaration (fields : List SExpr) (typeNames : List (String × Nat)) :
+    Result (Types.SubType × CompositeType × List (String × Nat)) := do
+  let fields := match fields with
+    | .atom id :: rest => if id.startsWith "$" then rest else fields
+    | _ => fields
+  let [definition] := fields | throw (.invalid "type requires one definition")
+  let (final, supers, body) ← match definition with
+    | .list (.atom "sub" :: fields) => do
+      let (final, fields) := match fields with
+        | .atom "final" :: rest => (true, rest)
+        | _ => (false, fields)
+      let parents := fields.takeWhile fun | .atom _ => true | _ => false
+      let supers ← parents.mapM fun
+        | .atom id => do return Types.HeapType.typeIdx (← index typeNames id)
+        | _ => throw (.invalid "supertype index syntax")
+      let [body] := fields.drop parents.length | throw (.invalid "subtype body syntax")
+      pure (final, supers, body)
+    | body => pure (true, [], body)
+  let (composite, fieldNames) ← compositeDeclaration body typeNames
+  let sub := match composite with
+    | .func signature => Types.SubType.func final supers
+        (signature.params.map Types.embedVal) (signature.results.map Types.embedVal)
+    | .struct_ fields => Types.SubType.struct_ final supers fields
+    | .array field => Types.SubType.array final supers field
+  return (sub, composite, fieldNames)
+
+private def referenceType (expr : SExpr) (typeNames : List (String × Nat)) :
+    Result (RefKind × Bool) := do
+  match ← valType expr typeNames with
+  | .ref heap => return (heap, true)
+  | .refNonNull heap => return (heap, false)
+  | _ => throw (.invalid "expected reference type")
+
+private partial def elemExpression (funcs globals typeNames : List (String × Nat)) :
+    SExpr → Result (List Instr)
+  | .atom id => do return [.refFunc (← index funcs id)]
+  | .list [.atom "item", .atom op, .atom arg] =>
+    elemExpression funcs globals typeNames (.list [.atom op, .atom arg])
+  | .list (.atom op :: .atom id :: args) => do
+    if op == "struct.new" || op == "struct.new_default" then
+      let type ← index typeNames id
+      let operands ← args.mapM (elemExpression funcs globals typeNames)
+      return operands.flatten ++ [.structNew type (op == "struct.new_default")]
+    else if op == "array.new" || op == "array.new_default" then
+      let type ← index typeNames id
+      let operands ← args.mapM (elemExpression funcs globals typeNames)
+      return operands.flatten ++ [.arrayOp (.new_ type (op == "array.new_default"))]
+    else if op == "array.new_fixed" then
+      let .atom count :: args := args | throw (.invalid "missing array count")
+      let type ← index typeNames id
+      let count ← index [] count
+      let operands ← args.mapM (elemExpression funcs globals typeNames)
+      return operands.flatten ++ [.arrayOp (.newFixed type count)]
+    else if op == "global.get" && args.isEmpty then
+      return [.globalGet (← index globals id)]
+    else if op == "call" && args.isEmpty then return [.call (← index funcs id)]
+    else if args.isEmpty then return [← immediate [] funcs typeNames op id]
+    else throw (.unsupported "element initializer")
+  | .list (.atom "item" :: expressions) => do
+    return (← expressions.mapM (elemExpression funcs globals typeNames)).flatten
+  | .list (.atom op :: args) => do
+    let instr ← operation op
+    let operands ← args.mapM (elemExpression funcs globals typeNames)
+    return operands.flatten ++ [instr]
+  | _ => throw (.unsupported "element initializer")
+
+private def elemExpressions (funcs globals typeNames : List (String × Nat))
+    (xs : List SExpr) : Result (List (List Instr)) :=
+  xs.mapM (elemExpression funcs globals typeNames)
 
 private def element (fields : List SExpr)
     (funcs typeNames tableNames elemNames globalNames memNames dataNames : List (String × Nat)) :
@@ -646,6 +981,7 @@ private def element (fields : List SExpr)
   | _ => pure ()
   let offset ← match rest with
     | .list (.atom "offset" :: expressions) :: tail => pure (some (expressions, tail))
+    | .list (.atom "ref" :: _) :: _ => pure none
     | expression@(.list _) :: tail => pure (some ([expression], tail))
     | _ => pure none
   if let some (expressions, tail) := offset then
@@ -659,17 +995,24 @@ private def element (fields : List SExpr)
     | .active _ _ => pure ()
     | _ => throw (.invalid "active element requires offset")
   let mut kind := Types.HeapType.func
+  let mut nullable := !rest.all (fun | .atom id => isIndex id | _ => false)
   match rest with
-  | .atom "externref" :: tail => kind := .extern; rest := tail
-  | .list [.atom "ref", .atom "null", .atom heap] :: tail =>
-    kind ← liftM (heapType heap)
-    rest := tail
-  | .list (.atom "ref" :: _) :: _ => throw (.unsupported "element reference type")
-  | .atom "func" :: tail | .atom "funcref" :: tail => rest := tail
+  | .atom "func" :: tail => nullable := false; rest := tail
+  | type@(.list (.atom "ref" :: _)) :: tail =>
+    let (heap, null) ← liftM (referenceType type typeNames)
+    kind := heap; nullable := null; rest := tail
+  | type@(.atom alias) :: tail =>
+    if ["funcref", "externref", "nullfuncref", "nullexternref",
+      "anyref", "eqref", "i31ref", "structref", "arrayref", "nullref",
+      "exnref", "nullexnref"].contains alias then
+      let (heap, null) ← liftM (referenceType type typeNames)
+      kind := heap; nullable := null; rest := tail
   | _ => pure ()
-  return { kind, init := ← liftM (elemExpressions funcs globalNames rest), mode }
+  let initializers ← liftM (elemExpressions funcs globalNames typeNames rest)
+  return {kind, nullable, init := initializers, mode}
 
-private def table (fields : List SExpr) (funcs globals : List (String × Nat)) (idx : Nat) :
+private def table (fields : List SExpr) (funcs globals typeNames : List (String × Nat))
+    (idx : Nat) :
     Result (Table × List Export × List Elem) := do
   let mut rest := match fields with
     | .atom id :: rest => if id.startsWith "$" then rest else fields
@@ -688,12 +1031,11 @@ private def table (fields : List SExpr) (funcs globals : List (String × Nat)) (
   rest := rest'
   match rest with
   | [kind, .list (.atom "elem" :: xs)] =>
-    let kind ← refKind kind
-    if kind != Types.HeapType.func then throw (Error.unsupported "nonfunction inline elements")
-    let init ← elemExpressions funcs globals xs
-    let type : TableType := {addrType, min := init.length, max := some init.length, kind}
+    let (kind, nullable) ← referenceType kind typeNames
+    let init ← elemExpressions funcs globals typeNames xs
+    let type : TableType := {addrType, min := init.length, max := some init.length, kind, nullable}
     let offset : List Instr := [.const (Value.ofNat addrType 0)]
-    return (⟨type, [.refNull kind]⟩, exports, [{init, mode := .active idx offset}])
+    return (⟨type, [.refNull kind]⟩, exports, [{kind, nullable, init, mode := .active idx offset}])
   | .atom min :: tail =>
     let min ← magnitude min
     let (max, tail) ← match tail with
@@ -702,10 +1044,10 @@ private def table (fields : List SExpr) (funcs globals : List (String × Nat)) (
         else pure (none, tail)
       | _ => pure (none, tail)
     let kind :: init := tail | throw (Error.unsupported "table declaration syntax")
-    let kind ← refKind kind
-    let type : TableType := {addrType, min, max, kind}
+    let (kind, nullable) ← referenceType kind typeNames
+    let type : TableType := {addrType, min, max, kind, nullable}
     let code : List Instr ← if init.isEmpty then pure [Instr.refNull kind] else do
-      let [code] ← elemExpressions funcs globals init |
+      let [code] ← elemExpressions funcs globals typeNames init |
         throw (Error.invalid "table requires one initializer expression")
       pure code
     return (⟨type, code⟩, exports, [])
@@ -771,17 +1113,18 @@ private def dataSegment (fields : List SExpr)
   else if explicitMemory then throw (Error.invalid "active data requires offset")
   return {bytes := ← liftM (dataBytes rest), mode}
 
-private def globalType : SExpr → Result GlobalType
-  | .list [.atom "mut", type] => do return ⟨.var, ← valType type⟩
+private def globalType (typeNames : List (String × Nat)) : SExpr → Result GlobalType
+  | .list [.atom "mut", type] => do return ⟨.var, ← valType type typeNames⟩
   | .list (.atom "mut" :: _) => throw (.invalid "mutable global type syntax")
-  | type => do return ⟨.const, ← valType type⟩
+  | type => do return ⟨.const, ← valType type typeNames⟩
 
-private def importedGlobal (fields : List SExpr) : Result GlobalType := do
+private def importedGlobal (fields : List SExpr) (typeNames : List (String × Nat)) :
+    Result GlobalType := do
   let fields := match fields with
     | .atom id :: rest => if id.startsWith "$" then rest else fields
     | _ => fields
   let [type] := fields | throw (.invalid "imported global requires a type and no initializer")
-  globalType type
+  globalType typeNames type
 
 private def global (fields : List SExpr)
     (funcs typeNames tableNames elemNames globalNames memNames dataNames : List (String × Nat))
@@ -798,15 +1141,15 @@ private def global (fields : List SExpr)
       rest := tail
     | _ => break
   let type :: init := rest | throw (.invalid "global requires a type")
-  let type ← liftM (globalType type)
+  let type ← liftM (globalType typeNames type)
   let (code, _, _) ←
     sequence [] funcs [] typeNames tableNames elemNames globalNames memNames dataNames false init
   return (⟨type, code⟩, exports)
 
-private def expandInlineImport (field : SExpr) (funcIndex tableIndex globalIndex memIndex : Nat) :
+private def expandInlineImport (field : SExpr) (funcIndex tableIndex globalIndex memIndex tagIndex : Nat) :
     Result (List SExpr) := do
   let .list (.atom kind :: xs) := field | return [field]
-  if kind != "func" && kind != "table" && kind != "global" && kind != "memory" then return [field]
+  if kind != "func" && kind != "table" && kind != "global" && kind != "memory" && kind != "tag" then return [field]
   let (id, xs) := match xs with
     | .atom id :: rest => if id.startsWith "$" then ([SExpr.atom id], rest) else ([], xs)
     | _ => ([], xs)
@@ -822,7 +1165,8 @@ private def expandInlineImport (field : SExpr) (funcIndex tableIndex globalIndex
   | .list [.atom "import", .string owner, .string name] :: tail =>
     let idx := if kind == "func" then funcIndex
       else if kind == "table" then tableIndex
-      else if kind == "memory" then memIndex else globalIndex
+      else if kind == "memory" then memIndex
+      else if kind == "tag" then tagIndex else globalIndex
     let imported := SExpr.list [.atom "import", .string owner, .string name,
       .list (.atom kind :: (id ++ tail))]
     let aliases := exports.map fun bytes =>
@@ -845,14 +1189,14 @@ private def expandImports (fields : List SExpr) : Result (List SExpr) := do
   let mut tables := 0
   let mut globals := 0
   let mut memories := 0
+  let mut tags := 0
   let mut defined := false
   for field in fields do
-    let next ← expandInlineImport field funcs tables globals memories
+    let next ← expandInlineImport field funcs tables globals memories tags
     for field in next do
       match field with
       | .list (.atom "import" :: _) =>
         if defined then throw (.invalid "imports must precede definitions")
-      | .list (.atom "tag" :: _) => throw (.unsupported "tags")
       | .list (.atom tag :: _) =>
         if ["func", "table", "global", "memory", "tag"].contains tag then defined := true
       | _ => pure ()
@@ -860,6 +1204,7 @@ private def expandImports (fields : List SExpr) : Result (List SExpr) := do
       if (entityFields "table" field).isSome then tables := tables + 1
       if (entityFields "global" field).isSome then globals := globals + 1
       if (entityFields "memory" field).isSome then memories := memories + 1
+      if (entityFields "tag" field).isSome then tags := tags + 1
       expanded := expanded ++ [field]
   return expanded
 
@@ -879,6 +1224,26 @@ def module (expr : SExpr) : Result Module := do
     | .atom id :: rest => if id.startsWith "$" then rest else fields
     | _ => fields
   let fields ← expandImports fields
+  let mut typeNames := []
+  let mut typeCount := 0
+  for field in fields do
+    if let some types := ← groupFields field then
+      for declaration in types do
+        if let .atom id :: _ := declaration then
+          if id.startsWith "$" then typeNames := typeNames ++ [(id, typeCount)]
+        typeCount := typeCount + 1
+  if (typeNames.map Prod.fst).eraseDups.length != typeNames.length then
+    throw (.invalid "duplicate type identifier")
+  let mut types := []
+  let mut groups := []
+  let mut fieldNames := []
+  for field in fields do
+    if let some declarations := ← groupFields field then
+      let entries ← declarations.mapM (fun fields => subtypeDeclaration fields typeNames)
+      fieldNames := fieldNames ++ entries.zipIdx.map
+        (fun (entry, i) => (types.length + i, entry.2.2))
+      types := types ++ entries.map (fun entry => entry.2.1)
+      groups := groups ++ [entries.map Prod.fst]
   let mut names := []
   let mut count := 0
   for field in fields do
@@ -888,6 +1253,15 @@ def module (expr : SExpr) : Result Module := do
       count := count + 1
   if (names.map Prod.fst).eraseDups.length != names.length then
     throw (.invalid "duplicate function identifier")
+  let mut tagNames := []
+  let mut tagCount := 0
+  for field in fields do
+    if let some (xs, _) := entityFields "tag" field then
+      if let .atom id :: _ := xs then
+        if id.startsWith "$" then tagNames := tagNames ++ [(id, tagCount)]
+      tagCount := tagCount + 1
+  if (tagNames.map Prod.fst).eraseDups.length != tagNames.length then
+    throw (.invalid "duplicate tag identifier")
   let mut globalNames := []
   let mut globalCount := 0
   for field in fields do
@@ -905,7 +1279,7 @@ def module (expr : SExpr) : Result Module := do
     if let some (xs, imported) := entityFields "table" field then
       if let .atom id :: _ := xs then
         if id.startsWith "$" then tableNames := tableNames ++ [(id, tableCount)]
-      let (_, _, implicitElems) ← table xs names globalNames tableCount
+      let (_, _, implicitElems) ← table xs names globalNames typeNames tableCount
       if imported && !implicitElems.isEmpty then
         throw (.invalid "imported table cannot have inline elements")
       elemCount := elemCount + implicitElems.length
@@ -939,17 +1313,7 @@ def module (expr : SExpr) : Result Module := do
     throw (.invalid "duplicate memory identifier")
   if (dataNames.map Prod.fst).eraseDups.length != dataNames.length then
     throw (.invalid "duplicate data identifier")
-  -- Collect explicit types first so inferred signatures cannot shift their indices.
-  let mut typeNames := []
-  let mut types := []
-  for field in fields do
-    if let .list (.atom "type" :: xs) := field then
-      let (id, ft) ← declaration xs
-      if let some id := id then typeNames := typeNames ++ [(id, types.length)]
-      types := types ++ [ft]
-  if (typeNames.map Prod.fst).eraseDups.length != typeNames.length then
-    throw (.invalid "duplicate type identifier")
-  let mut result : Module := {types := types}
+  let mut result : Module := {types := types, typeGroups := groups}
   for field in fields do
     match field with
     | .list [.atom "import", .string owner, .string bytes, .list (.atom kind :: fields)] =>
@@ -957,45 +1321,78 @@ def module (expr : SExpr) : Result Module := do
       let importName ← name bytes
       let (desc, updatedTypes) ← match kind with
         | "func" => do
-          let (idx, importedTypes) ← (importedFunction fields typeNames).run result.types
+          let (idx, importedTypes) ← (importedFunction fields typeNames).run
+            ⟨result.types, result.typeGroups, tagNames, fieldNames⟩
           pure (ImportDesc.func idx, importedTypes)
         | "memory" => do
           let (type, es, datas) ← memory fields result.importedMemories.length
           if !es.isEmpty || !datas.isEmpty then
             throw (.invalid "imported memory cannot have exports or inline data")
-          pure (ImportDesc.memory type, result.types)
+          pure (ImportDesc.memory type, ParseState.mk result.types result.typeGroups tagNames fieldNames)
         | "global" => do
-          pure (ImportDesc.global (← importedGlobal fields), result.types)
+          pure (ImportDesc.global (← importedGlobal fields typeNames),
+            ParseState.mk result.types result.typeGroups tagNames fieldNames)
         | "table" => do
-          let (t, es, elems) ← table fields names globalNames result.importedTables.length
+          let (t, es, elems) ← table fields names globalNames typeNames result.importedTables.length
           if !es.isEmpty || !elems.isEmpty then
             throw (.invalid "imported table cannot have exports or inline elements")
-          pure (ImportDesc.table t.type, result.types)
-        | _ => throw (.unsupported s!"import kind {kind}")
+          pure (ImportDesc.table t.type, ParseState.mk result.types result.typeGroups tagNames fieldNames)
+        | "tag" => do
+          let (idx, updatedTypes) ← (importedFunction fields typeNames).run
+            ⟨result.types, result.typeGroups, tagNames, fieldNames⟩
+          pure (ImportDesc.tag idx, updatedTypes)
+        | _ => throw (.invalid s!"unknown import kind {kind}")
       result := {result with
-        types := updatedTypes
+        types := updatedTypes.types, typeGroups := updatedTypes.groups
         imports := result.imports ++ [⟨moduleName, importName, desc⟩]}
     | .list (.atom "import" :: _) => throw (.invalid "import declaration syntax")
     | .list (.atom "func" :: fields) =>
       let ((f, es), updatedTypes) ←
         (function fields names typeNames tableNames elemNames globalNames memNames dataNames
-          (result.importedFuncIndices.length + result.funcs.length)).run result.types
+          (result.importedFuncIndices.length + result.funcs.length)).run
+          ⟨result.types, result.typeGroups, tagNames, fieldNames⟩
       result := { result with
-        types := updatedTypes
+        types := updatedTypes.types, typeGroups := updatedTypes.groups
         funcs := result.funcs ++ [f]
         exports := result.exports ++ es }
+    | .list (.atom "tag" :: fields) =>
+      let fields := match fields with
+        | .atom id :: rest => if id.startsWith "$" then rest else fields
+        | _ => fields
+      let mut rest := fields
+      let mut exports := []
+      while true do
+        match rest with
+        | .list [.atom "export", .string bytes] :: tail =>
+          let exportName ← name bytes
+          let idx := result.importedTagIndices.length + result.tags.length
+          exports := exports ++ [{name := exportName, desc := ExternIdx.tag idx}]
+          rest := tail
+        | _ => break
+      let (idx, updatedTypes) ← (importedFunction rest typeNames).run
+        ⟨result.types, result.typeGroups, tagNames, fieldNames⟩
+      result := {result with
+        types := updatedTypes.types
+        typeGroups := updatedTypes.groups
+        tags := result.tags ++ [idx]
+        exports := result.exports ++ exports}
+    | .list [.atom "export", .string bytes, .list [.atom "tag", .atom id]] =>
+      result := {result with exports := result.exports ++
+        [{name := ← name bytes, desc := .tag (← index tagNames id)}]}
     | .list (.atom "global" :: fields) =>
       let ((g, es), updatedTypes) ←
         (global fields names typeNames tableNames elemNames globalNames memNames dataNames
-          (result.importedGlobals.length + result.globals.length)).run result.types
+          (result.importedGlobals.length + result.globals.length)).run
+          ⟨result.types, result.typeGroups, tagNames, fieldNames⟩
       result := {result with
-        types := updatedTypes
+        types := updatedTypes.types, typeGroups := updatedTypes.groups
         globals := result.globals ++ [g]
         exports := result.exports ++ es}
-    | .list (.atom "type" :: _) => pure ()
+    | .list (.atom "type" :: _) | .list (.atom "rec" :: _) => pure ()
     | .list (.atom "table" :: fields) =>
       let (t, es, elems) ←
-        table fields names globalNames (result.importedTables.length + result.tables.length)
+        table fields names globalNames typeNames
+          (result.importedTables.length + result.tables.length)
       result := {result with
         tables := result.tables ++ [t]
         exports := result.exports ++ es
@@ -1009,8 +1406,11 @@ def module (expr : SExpr) : Result Module := do
         datas := result.datas ++ datas}
     | .list (.atom "data" :: fields) =>
       let (data, updatedTypes) ← (dataSegment fields names
-        typeNames tableNames elemNames globalNames memNames dataNames).run result.types
-      result := {result with datas := result.datas ++ [data], types := updatedTypes}
+        typeNames tableNames elemNames globalNames memNames dataNames).run
+          ⟨result.types, result.typeGroups, tagNames, fieldNames⟩
+      result := {result with
+        datas := result.datas ++ [data]
+        types := updatedTypes.types, typeGroups := updatedTypes.groups}
     | .list [.atom "export", .string bytes, .list [.atom "memory", .atom id]] =>
       result := {result with exports := result.exports ++
         [{name := ← name bytes, desc := .memory (← index memNames id)}]}
@@ -1019,8 +1419,10 @@ def module (expr : SExpr) : Result Module := do
       result := {result with start := some (← index names id)}
     | .list (.atom "elem" :: fields) =>
       let (elem, updatedTypes) ← (element fields names typeNames tableNames elemNames globalNames
-        memNames dataNames).run result.types
-      result := {result with elems := result.elems ++ [elem], types := updatedTypes}
+        memNames dataNames).run ⟨result.types, result.typeGroups, tagNames, fieldNames⟩
+      result := {result with
+        elems := result.elems ++ [elem]
+        types := updatedTypes.types, typeGroups := updatedTypes.groups}
     | .list [.atom "export", .string bytes, .list [.atom "table", .atom id]] =>
       result := {result with exports := result.exports ++
         [{name := ← name bytes, desc := .table (← index tableNames id)}]}
@@ -1030,7 +1432,7 @@ def module (expr : SExpr) : Result Module := do
     | .list [.atom "export", .string bytes, .list [.atom "func", .atom id]] =>
       result := {result with exports := result.exports ++
         [{name := ← name bytes, desc := .func (← index names id)}]}
-    | _ => throw (.unsupported "module field")
+    | _ => throw (.invalid "unknown module field")
   return result
 
 end Wasm.Text

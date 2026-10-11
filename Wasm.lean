@@ -1,3 +1,5 @@
+import Wasm.VectorStepper
+import Wasm.Binary.Decode
 import Wasm.Syntax
 import Wasm.TypeEmbedding
 import Wasm.TypeChecking
@@ -13,6 +15,7 @@ import Wasm.ControlValidation
 import Wasm.ControlChoice
 import Wasm.Stepper
 import Wasm.Runtime
+import Wasm.GCStorage
 import Wasm.FrameReduction
 import Wasm.Configuration
 import Wasm.LocalValidation

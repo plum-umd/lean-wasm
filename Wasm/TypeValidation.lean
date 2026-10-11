@@ -11,12 +11,11 @@ def ValType.Valid (ctx : Context) : ValType → Prop
 structure SubType.Valid (ctx : Context) (index : Nat) (sub : SubType) : Prop where
   source : sub.isSource = true
   atMostOneSuper : sub.supers.length ≤ 1
-  params : ∀ type ∈ sub.body.params, type.Valid ctx
-  results : ∀ type ∈ sub.body.results, type.Valid ctx
+  values : ∀ type ∈ sub.body.valTypes, type.Valid ctx
   supers : ∀ parent ∈ sub.supers, ∃ x defined unfolded,
     parent = .typeIdx x ∧ x < index ∧ ctx.types[x]? = some defined ∧
     defined.unroll? = some unfolded ∧ unfolded.isFinal = false ∧
-    FuncMatches ctx sub.body unfolded.body
+    CompMatches ctx sub.body unfolded.body
 
 def RecType.Valid (ctx : Context) (base : Nat) (group : RecType) : Prop :=
   ∀ (i : Nat) (sub : SubType), group[i]? = some sub → sub.Valid ctx (base + i)

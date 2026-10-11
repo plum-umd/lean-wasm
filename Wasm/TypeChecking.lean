@@ -40,11 +40,21 @@ mutual
   def ValType.weight : ValType → Nat
     | .ref _ heap => 1 + heap.weight
     | _ => 1
+  def StorageType.weight : StorageType → Nat
+    | .val type => 1 + type.weight
+    | _ => 1
+  def FieldType.weight : FieldType → Nat
+    | .mk type _ => 1 + type.weight
   def SubType.weight : SubType → Nat
     | .func _ supers params results => 1 +
       (supers.map HeapType.weight).foldl (· + ·) 0 +
       (params.map ValType.weight).foldl (· + ·) 0 +
       (results.map ValType.weight).foldl (· + ·) 0
+    | .struct_ _ supers fields => 1 +
+      (supers.map HeapType.weight).foldl (· + ·) 0 +
+      (fields.map FieldType.weight).foldl (· + ·) 0
+    | .array _ supers field => 1 +
+      (supers.map HeapType.weight).foldl (· + ·) 0 + field.weight
 end
 
 /-- A size-derived search budget for closed runtime types; not a completeness theorem. -/
@@ -89,16 +99,55 @@ def searchHeap : Nat → (ctx : Context) → (a b : HeapType) → Search (HeapMa
                 (searchHeap fuel ctx parent.val dst.heap).map fun h =>
                   ⟨.defined (.super expanded parent.property h.down)⟩) sub.supers.attach
         | _, _ => exact .rejected
+      | .defined group index, b =>
+        match expanded : (DefinedType.mk group index).expandComposite? with
+        | none => exact .rejected
+        | some comp => exact (searchHeap fuel ctx comp.heap b).map fun h =>
+            ⟨.definedComp expanded h.down⟩
+      | .eq, .any => exact .found ⟨.eqAny⟩
+      | .i31, .eq => exact .found ⟨.i31Eq⟩
+      | .struct_, .eq => exact .found ⟨.structEq⟩
+      | .array, .eq => exact .found ⟨.arrayEq⟩
+      | .i31, .any => exact .found ⟨.trans (middle := .eq) ⟨1, by simp [HeapType.scopedFuel]⟩ .i31Eq .eqAny⟩
+      | .struct_, .any => exact .found ⟨.trans (middle := .eq) ⟨1, by simp [HeapType.scopedFuel]⟩ .structEq .eqAny⟩
+      | .array, .any => exact .found ⟨.trans (middle := .eq) ⟨1, by simp [HeapType.scopedFuel]⟩ .arrayEq .eqAny⟩
+      | .none, b =>
+        if bottom : b = .bot then exact .rejected
+        else exact (searchHeap fuel ctx b .any).map fun h => ⟨.none h.down bottom⟩
       | .nofunc, b =>
         if bottom : b = .bot then exact .rejected
         else exact (searchHeap fuel ctx b .func).map fun h => ⟨.nofunc h.down bottom⟩
       | .noextern, b =>
         if bottom : b = .bot then exact .rejected
         else exact (searchHeap fuel ctx b .extern).map fun h => ⟨.noextern h.down bottom⟩
+      | .noexn, b =>
+        if bottom : b = .bot then exact .rejected
+        else exact (searchHeap fuel ctx b .exn).map fun h => ⟨.noexn h.down bottom⟩
       | .recIdx i, .func =>
         match lookup : ctx.recs[i]? with
         | none => exact .rejected
-        | some sub => exact Search.found ⟨.recFunc lookup⟩
+        | some sub => exact (searchHeap fuel ctx sub.body.heap .func).map fun h =>
+            ⟨.recComp lookup h.down⟩
+      | .recIdx i, .struct_ =>
+        match lookup : ctx.recs[i]? with
+        | none => exact .rejected
+        | some sub => exact (searchHeap fuel ctx sub.body.heap .struct_).map fun h =>
+            ⟨.recComp lookup h.down⟩
+      | .recIdx i, .array =>
+        match lookup : ctx.recs[i]? with
+        | none => exact .rejected
+        | some sub => exact (searchHeap fuel ctx sub.body.heap .array).map fun h =>
+            ⟨.recComp lookup h.down⟩
+      | .recIdx i, .eq =>
+        match lookup : ctx.recs[i]? with
+        | none => exact .rejected
+        | some sub => exact (searchHeap fuel ctx sub.body.heap .eq).map fun h =>
+            ⟨.recComp lookup h.down⟩
+      | .recIdx i, .any =>
+        match lookup : ctx.recs[i]? with
+        | none => exact .rejected
+        | some sub => exact (searchHeap fuel ctx sub.body.heap .any).map fun h =>
+            ⟨.recComp lookup h.down⟩
       | .recIdx i, b =>
         match lookup : ctx.recs[i]? with
         | none => exact .rejected
@@ -120,6 +169,7 @@ def searchVal (fuel : Nat) (ctx : Context) (a b : ValType) : Search (ValMatches 
   | .i64, .i64 => exact Search.found ⟨.i64⟩
   | .f32, .f32 => exact Search.found ⟨.f32⟩
   | .f64, .f64 => exact Search.found ⟨.f64⟩
+  | .v128, .v128 => exact Search.found ⟨.v128⟩
   | .bot, _ => exact Search.found ⟨.bot⟩
   | .ref na ha, .ref nb hb =>
     if nullable : na = true → nb = true then

@@ -11,6 +11,7 @@ def embedVal : Wasm.ValType → ValType
   | .i64 => .i64
   | .f32 => .f32
   | .f64 => .f64
+  | .v128 => .v128
   | .ref kind => .ref true kind
   | .refNonNull heap => .ref false heap
 
@@ -19,12 +20,18 @@ def projectVal : ValType → Option Wasm.ValType
   | .i64 => some .i64
   | .f32 => some .f32
   | .f64 => some .f64
+  | .v128 => some .v128
   | .ref true heap => some (.ref heap)
   | .ref false heap => some (.refNonNull heap)
   | _ => none
 
 def embedFunc (type : Wasm.FuncType) : FuncType :=
   ⟨type.params.map embedVal, type.results.map embedVal⟩
+
+def embedComposite : Wasm.CompositeType → CompType
+  | .func type => .func (embedFunc type)
+  | .struct_ fields => .struct_ fields
+  | .array field => .array field
 
 @[simp] theorem project_embed (type : Wasm.ValType) :
     projectVal (embedVal type) = some type := by
@@ -33,6 +40,7 @@ def embedFunc (type : Wasm.FuncType) : FuncType :=
   | i64 => rfl
   | f32 => rfl
   | f64 => rfl
+  | v128 => rfl
   | ref kind => rfl
   | refNonNull heap => rfl
 
@@ -56,6 +64,7 @@ theorem embed_matches (ctx : Context) (type : Wasm.ValType) :
   | i64 => exact .i64
   | f32 => exact .f32
   | f64 => exact .f64
+  | v128 => exact .v128
   | ref kind => exact .ref (RefMatches.refl ctx ⟨true, kind⟩)
   | refNonNull heap => exact .ref (RefMatches.refl ctx ⟨false, heap⟩)
 

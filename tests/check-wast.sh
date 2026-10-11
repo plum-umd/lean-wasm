@@ -1,7 +1,17 @@
 #!/bin/sh
 # End-to-end regression against the pinned, unmodified upstream scripts.
 set -eu
+mode=${1:-regression}
+case "$mode" in regression|--full) ;; *) echo "usage: sh tests/check-wast.sh [--full]"; exit 1 ;; esac
 lake build wast
+vectors=$(.lake/build/bin/wast tests/vectors.wast)
+printf '%s\n' "$vectors" | rg -q '^tests/vectors.wast: 8 passed, 0 failed, 0 unsupported$'
+cast_branches=$(.lake/build/bin/wast tests/gc-cast-branches.wast)
+printf '%s\n' "$cast_branches" | rg -q '^tests/gc-cast-branches.wast: 10 passed, 0 failed, 0 unsupported$'
+structures=$(.lake/build/bin/wast tests/structures.wast)
+printf '%s\n' "$structures" | rg -q '^tests/structures.wast: 19 passed, 0 failed, 0 unsupported$'
+gc_references=$(.lake/build/bin/wast tests/gc-references.wast)
+printf '%s\n' "$gc_references" | rg -q '^tests/gc-references.wast: 23 passed, 0 failed, 0 unsupported$'
 smoke=$(.lake/build/bin/wast tests/smoke.wast)
 printf '%s\n' "$smoke" | rg -q '^tests/smoke.wast: 4 passed, 0 failed, 0 unsupported$'
 control=$(.lake/build/bin/wast tests/control.wast)
@@ -28,6 +38,18 @@ frontend=$(.lake/build/bin/wast tests/frontend-gaps.wast)
 printf '%s\n' "$frontend" | rg -q '^tests/frontend-gaps.wast: 18 passed, 0 failed, 0 unsupported$'
 spectest=$(.lake/build/bin/wast tests/spectest.wast)
 printf '%s\n' "$spectest" | rg -q '^tests/spectest.wast: 23 passed, 0 failed, 0 unsupported$'
+binary=$(.lake/build/bin/wast tests/binary-modules.wast)
+printf '%s\n' "$binary" | rg -q '^tests/binary-modules.wast: 6 passed, 0 failed, 0 unsupported$'
+bottom=$(.lake/build/bin/wast tests/bottom.wast)
+printf '%s\n' "$bottom" | rg -q '^tests/bottom.wast: 5 passed, 0 failed, 0 unsupported$'
+definitions=$(.lake/build/bin/wast tests/module-definitions.wast)
+printf '%s\n' "$definitions" | rg -q '^tests/module-definitions.wast: 40 passed, 0 failed, 0 unsupported$'
+quoted=$(.lake/build/bin/wast tests/quoted-modules.wast)
+printf '%s\n' "$quoted" | rg -q '^tests/quoted-modules.wast: 10 passed, 0 failed, 0 unsupported$'
+exhaustion=$(.lake/build/bin/wast --call-depth 16 --fuel 10000 tests/exhaustion.wast)
+printf '%s\n' "$exhaustion" | rg -q '^tests/exhaustion.wast: 6 passed, 0 failed, 0 unsupported$'
+typed=$(.lake/build/bin/wast tests/typed-references.wast)
+printf '%s\n' "$typed" | rg -q '^tests/typed-references.wast: 34 passed, 0 failed, 0 unsupported$'
 # Start, direct re-export, nested calls, and indirect host calls print in order.
 expected_prints='42 : i32
 17 : i32
@@ -42,65 +64,52 @@ expected_prints='42 : i32
 99 : i32'
 actual_prints=$(printf '%s\n' "$spectest" | rg ' : (i32|i64|f32|f64)$')
 [ "$actual_prints" = "$expected_prints" ]
-status=0
-output=$(.lake/build/bin/wast --fuel 4000000 tests/testsuite/i32.wast tests/testsuite/i64.wast \
-  tests/testsuite/ref_null.wast tests/testsuite/ref_func.wast tests/testsuite/ref_is_null.wast \
-  tests/testsuite/table_get.wast tests/testsuite/table_set.wast tests/testsuite/table_size.wast \
-  tests/testsuite/table_grow.wast tests/testsuite/table_fill.wast \
-  tests/testsuite/table_copy.wast tests/testsuite/table_init.wast tests/testsuite/global.wast \
-  tests/testsuite/memory.wast tests/testsuite/memory_size.wast tests/testsuite/memory_grow.wast \
-  tests/testsuite/memory_fill.wast tests/testsuite/memory_copy.wast tests/testsuite/memory_init.wast \
-  tests/testsuite/f32.wast tests/testsuite/f64.wast tests/testsuite/conversions.wast \
-  tests/testsuite/float_misc.wast tests/testsuite/float_literals.wast \
-  tests/testsuite/f32_bitwise.wast tests/testsuite/f64_bitwise.wast \
-  tests/testsuite/f32_cmp.wast tests/testsuite/f64_cmp.wast) || status=$?
-[ "$status" -eq 2 ] || { echo "expected incomplete-coverage exit 2, got $status"; exit 1; }
-printf '%s\n' "$output"
-printf '%s\n' "$output" | rg -q '^tests/testsuite/i32.wast: 458 passed, 0 failed, 2 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/i64.wast: 414 passed, 0 failed, 2 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/ref_null.wast: 0 passed, 0 failed, 34 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/ref_func.wast: 17 passed, 0 failed, 0 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/ref_is_null.wast: 2 passed, 0 failed, 20 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/table_get.wast: 16 passed, 0 failed, 0 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/table_set.wast: 26 passed, 0 failed, 0 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/table_size.wast: 39 passed, 0 failed, 0 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/table_grow.wast: 58 passed, 0 failed, 0 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/table_fill.wast: 45 passed, 0 failed, 0 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/table_copy.wast: 1728 passed, 0 failed, 0 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/table_init.wast: 790 passed, 0 failed, 2 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/global.wast: 117 passed, 0 failed, 7 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/memory.wast: 86 passed, 0 failed, 4 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/memory_size.wast: 42 passed, 0 failed, 0 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/memory_grow.wast: 51 passed, 0 failed, 0 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/memory_fill.wast: 100 passed, 0 failed, 0 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/memory_copy.wast: 4450 passed, 0 failed, 0 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/memory_init.wast: 250 passed, 0 failed, 0 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/f32.wast: 2512 passed, 0 failed, 2 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/f64.wast: 2512 passed, 0 failed, 2 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/conversions.wast: 619 passed, 0 failed, 0 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/float_misc.wast: 471 passed, 0 failed, 0 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/float_literals.wast: 99 passed, 0 failed, 80 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/f32_bitwise.wast: 364 passed, 0 failed, 0 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/f64_bitwise.wast: 364 passed, 0 failed, 0 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/f32_cmp.wast: 2407 passed, 0 failed, 0 unsupported$'
-printf '%s\n' "$output" | rg -q '^tests/testsuite/f64_cmp.wast: 2407 passed, 0 failed, 0 unsupported$'
-
-# The broader audit includes the documented bottom-type select validation failure.
-# Match its actual failure count; never relabel it as unsupported or passed.
-while IFS=' ' read -r file passed failed unsupported; do
+# Every vendored upstream script is listed, including its resource limit.
+expected_files=$(awk '!/^#/ && NF {print "tests/testsuite/" $1}' \
+  tests/testsuite/expected-broader.txt | sort)
+actual_files=$(rg --files tests/testsuite -g '*.wast' | sort)
+inventory_files=$(awk '!/^#/ && NF {print "tests/testsuite/" $1}' \
+  tests/testsuite/inventory.tsv | sort)
+[ "$actual_files" = "$inventory_files" ] || {
+  echo "upstream inventory differs from vendored files"
+  exit 1
+}
+completed_files=$(awk '!/^#/ && $3 == "complete" {print "tests/testsuite/" $1}' \
+  tests/testsuite/inventory.tsv | sort)
+[ "$expected_files" = "$completed_files" ] || {
+  echo "passing regression manifest differs from completed inventory"
+  exit 1
+}
+while IFS=' ' read -r file passed failed unsupported call_depth script_fuel; do
   case "$file" in ''|'#'*) continue ;; esac
+  [ "$failed" -eq 0 ] || { echo "failure baseline forbidden for $file"; exit 1; }
+  [ "$unsupported" -eq 0 ] || { echo "unsupported baseline forbidden for $file"; exit 1; }
   status=0
-  output=$(.lake/build/bin/wast --fuel 4000000 "tests/testsuite/$file") || status=$?
+  output=$(.lake/build/bin/wast --fuel "${script_fuel:-4000000}" --call-depth "$call_depth" \
+    "tests/testsuite/$file") || status=$?
   expected_status=0
-  if [ "$failed" -gt 0 ]; then expected_status=1
-  elif [ "$unsupported" -gt 0 ]; then expected_status=2
-  fi
   [ "$status" -eq "$expected_status" ] || {
     printf '%s\n' "$output"
     echo "unexpected exit $status for $file (expected $expected_status)"
     exit 1
   }
   printf '%s\n' "$output"
-  printf '%s\n' "$output" | rg -F -x \
-    "tests/testsuite/$file: $passed passed, $failed failed, $unsupported unsupported"
+  printf '%s\n' "$output" | rg -q -F -x \
+    "tests/testsuite/$file: $passed passed, 0 failed, $unsupported unsupported"
 done < tests/testsuite/expected-broader.txt
+
+if [ "$mode" = --full ]; then
+  full_status=0
+  while read -r file family coverage; do
+    case "$file" in ''|'#'*) continue ;; esac
+    [ "$coverage" != complete ] || continue
+    status=0
+    .lake/build/bin/wast --fuel 4000000 --call-depth 256 "tests/testsuite/$file" || status=$?
+    case "$status" in
+      0) ;;
+      2) [ "$full_status" -ne 0 ] || full_status=2 ;;
+      *) full_status=1 ;;
+    esac
+  done < tests/testsuite/inventory.tsv
+  exit "$full_status"
+fi

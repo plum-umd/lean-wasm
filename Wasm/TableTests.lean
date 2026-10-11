@@ -12,7 +12,7 @@ private def tableTests : IO Unit := do
   let f0 := RefValue.func ⟨0⟩
   let f1 := RefValue.func ⟨1⟩
   let owner : ModuleInst :=
-    { types := [⟨[.i32], [.i32]⟩], funcs := [⟨0⟩, ⟨1⟩],
+    { types := [.func ⟨[.i32], [.i32]⟩], funcs := [⟨0⟩, ⟨1⟩],
       tables := [⟨0⟩, ⟨1⟩], elems := [⟨0⟩] }
   let function : FuncInst := ⟨⟨[.i32], [.i32]⟩, owner,
     .wasm ⟨0, [], [.localGet 0, .const (.i32 1), .binop .i32 .add]⟩⟩
@@ -114,11 +114,11 @@ private def tableTests : IO Unit := do
     instructions [.const (.i32 1), .const (.i32 0), .const (.i32 3), .tableCopy 1 0]⟩
   checkTable "overlap through aliased table indices"
     (aliases.state.store.tables[0]? ≟ backward.state.store.tables[0]?)
-  let calleeOwner : ModuleInst := { types := [⟨[], [.ref .func]⟩], tables := [⟨1⟩] }
+  let calleeOwner : ModuleInst := { types := [.func ⟨[], [.ref .func]⟩], tables := [⟨1⟩] }
   let readTable : FuncInst := ⟨⟨[], [.ref .func]⟩, calleeOwner,
     .wasm ⟨0, [], [.const (.i64 0), .tableGet 0]⟩⟩
   let callStore := { store with funcs := [readTable, wrong] }
-  let callOwner := { owner with types := [⟨[], [.ref .func]⟩] }
+  let callOwner := { owner with types := [.func ⟨[], [.ref .func]⟩] }
   let read := runConfiguration 30 ⟨callStore, { module := callOwner },
     instructions [.const (.i32 0), .callIndirect 0 0]⟩
   checkTable "indirect callee uses its defining table map" (read.status ≟ .finished [.ref null])
@@ -144,7 +144,7 @@ example : ¬ ReferenceInstrTyping [⟨[], []⟩] [] (.refFunc 0) [] [.ref .func]
   intro h
   cases h with
   | func _ hd => simp at hd
-example : TableInstrTyping [⟨[.i32], [.i64]⟩] [⟨.i64, 1, none, .func, true⟩] []
+example : TableInstrTyping [.func ⟨[.i32], [.i64]⟩] [⟨.i64, 1, none, .func, true⟩] []
     (.callIndirect 0 0) [.i32, .i64] [.i64] :=
   .indirect (table := ⟨.i64, 1, none, .func, true⟩) (ft := ⟨[.i32], [.i64]⟩) rfl rfl rfl
 example : ¬ (ValType.ref .func).IsInteger := by decide
@@ -156,7 +156,7 @@ example : ¬ ReferenceInstrTyping [] [0] (.refFunc 0) [] [.ref .func] := by
   cases h with
   | func hf _ => simp at hf
 example (input output : List ValType) :
-    ¬ TableInstrTyping [⟨[], []⟩] [⟨.i32, 0, none, .extern, true⟩] []
+    ¬ TableInstrTyping [.func ⟨[], []⟩] [⟨.i32, 0, none, .extern, true⟩] []
       (.callIndirect 0 0) input output := by
   intro h
   cases h with

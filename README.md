@@ -3,8 +3,10 @@
 A Lean 4 implementation of WebAssembly, built around the formal specification's
 syntax, validation judgments, administrative instructions, and small-step reduction.
 The current implementation covers integers, parametric and structured control instructions,
-functions, globals, linear memory, typed references, tables, data/element segments,
-and module instantiation. It remains a fragment of WebAssembly 3.0.
+functions and tail calls, exceptions/tags, globals, linear memory, typed references,
+GC structs and arrays, SIMD and relaxed SIMD, tables, data/element segments, and module
+instantiation. The pinned top-level WebAssembly test corpus is covered; proof completeness
+and proposal-specific suites remain separate work.
 
 ## Reference
 
@@ -36,12 +38,16 @@ regressions evaluated during the build. A failed regression fails the build.
 
 | Module | Contents |
 | --- | --- |
-| `Wasm/Syntax.lean` | i32/i64 values, recursive instructions, block types, runtime traps, labels, module instances and frames |
+| `Wasm/Syntax.lean` | Numeric/vector/reference values, recursive instructions, block types, runtime traps, labels, module instances and frames |
 | `Wasm/Locals.lean` | Local reductions, contextual evaluator, soundness and frame invariants |
 | `Wasm/LocalValidation.lean` | Stack typing for locals and structured control |
 | `Wasm/LocalInitialization.lean` | Definite initialization effects for nonnullable locals |
 | `Wasm/TypeChecking.lean` | Proof-producing matching search and distinct exhaustion status |
 | `Wasm/TypeClosure.lean` | Close source type indices before linking |
+| `Wasm/TypeMatchingAlgorithm.lean` | Ordinary subtype matching and separate success soundness |
+| `Wasm/TypeValidationAlgorithm.lean` | Recursive function type section checking and success soundness |
+| `Wasm/Binary/Reader.lean` | Bounded byte, LEB128, name and section decoding |
+| `Wasm/Binary/Decode.lean` | Direct scalar, SIMD, typed-reference, and GC binary module decoding |
 | `Wasm/TypedRuntimeTests.lean` | Typed execution and a kernel-checked typed module |
 | `Wasm/LocalTests.lean` | Local access, update, tee lowering, block sharing and activation isolation |
 | `Wasm/Memory.lean` | Memory instances, little-endian codecs, bounds/growth rules and store invariants |
@@ -95,7 +101,7 @@ untyped and single-type `select`, all scalar integer-only numeric instructions, 
 `global.get`, `global.set`, `call`, `return`, all scalar integer loads/stores,
 `memory.size`, `memory.grow`, `memory.fill`, `memory.copy`, `memory.init`, `data.drop`,
 `ref.null`, `ref.func`, `ref.is_null`, `table.get`, `table.set`, `table.size`,
-`table.grow`, `table.fill`, `table.copy`, `table.init`, `elem.drop`, and `call_indirect`.
+`table.grow`, `table.fill`, `table.copy`, `table.init`, `elem.drop`, `call_indirect`, `call_ref`, `ref.as_non_null`, `br_on_null`, and `br_on_non_null`.
 The value types are i32, i64, f32, f64, and nullable/nonnullable function/external references.
 Concrete references retain recursive function type identity. Untyped `select`
 requires numeric values; typed `select`, locals, globals and function signatures
@@ -231,12 +237,10 @@ custom axioms; the tests print the proof dependencies for inspection.
 ## Next increments
 
 1. Pin an immutable upstream specification revision and maintain rule-level coverage.
-2. Prove absence-of-step completeness for the stepper, validation preservation, and
-   progress for the supported fragment.
-3. Add source `call_ref`, reference casts/tests/branches, then tail calls.
-4. Extend validation, floating-point operations and conversions, references,
-   SIMD, exceptions, and GC, keeping each extension tied to its specification rules.
-5. Extend executable validation and the `.wast` frontend with tables, indirect calls, linking, and binary decoding.
+2. Prove absence-of-step completeness, validation preservation, and progress for the fragment.
+3. Prove parser/decoder correctness and executable validator rejection correctness/completeness.
+4. Formalize IEEE arithmetic and the native float/host execution boundary.
+5. Add proposal-specific suites, including shared memories and threads/atomics, tied to their rules.
 
 ## Function runtime foundation
 
@@ -295,8 +299,8 @@ store. One step emits `AdminInstr.invoke address type`; a second step consumes t
 callee’s arguments and creates its activation. This administrative token projects
 the Wasm 3.0 intermediate pair `ref.func address; call_ref type`, retaining both
 its address and closed signature. Nullable reference values and `call_indirect` are
-implemented below. Source `call_ref`, GC heap types, tail calls,
-and certified host invocation remain future work. The direct-call token continues to combine
+implemented below. Source `call_ref`, GC heap types, and tail calls are implemented below.
+Certified host invocation remains future work. The direct-call token continues to combine
 the intermediate reference construction and invocation.
 
 Arguments move to parameter locals in source order; declared locals start
@@ -453,7 +457,8 @@ and allocation lookup/preservation are proved. A mechanized correspondence to
 upstream byte encoding and full validation preservation/progress remain future
 work.
 
-Float loads/stores preserve raw IEEE bits. SIMD/atomic memory instructions remain unsupported.
+Float loads/stores preserve raw IEEE bits. SIMD memory instructions support both address widths;
+shared memories and atomic instructions remain unsupported.
 The store-free `step`/`run`
 APIs cannot execute memory instructions; use `stepConfiguration`/`runConfiguration`.
 
@@ -617,10 +622,9 @@ an active and a passive segment, exports, and a start function that observes ini
 memory. They also cover mixed imports, repeat instantiation, forward/recursive calls,
 allocation budgets, traps, and fuel exhaustion.
 
-The current source projection excludes GC heap types, tags and exceptions. Host imports can
+The source projection includes GC heap types, tags and exceptions. Host imports can
 be linked, but the certified runner stops at host invocation; this status does not publish
-a completed module. The native runner additionally executes `spectest` host functions. Binary decoding, algorithmic
-module validation, full validation preservation/progress, and a mechanized upstream
+a completed module. The native runner additionally executes `spectest` host functions. Full validation preservation/progress, and a mechanized upstream
 correspondence remain future work.
 
 ```lean
@@ -747,7 +751,8 @@ the same signature, nullability, dangling references, typed host identity, mutab
 import invariance and immutable global covariance. A kernel-checked source module
 instantiates nonnullable globals/tables and an active nonnullable element segment
 using forward function references, then executes an indirect call through a declared
-parent type. GC heap types and source reference casts/tests/branches remain unsupported.
+parent type. Source `call_ref`, `ref.as_non_null`, `br_on_null`, and
+`br_on_non_null` use certified reductions. GC reference casts/tests use certified runtime type matching.
 
 These proofs establish soundness against the Lean judgments. They do not establish
 full Wasm 3.0 type safety or a mechanized correspondence with the upstream specification.
@@ -761,7 +766,7 @@ escapes, Unicode scalar escapes, and decimal/hexadecimal integer literals with
 signs and digit separators. Integer literals are range checked before conversion
 to bit patterns.
 
-The module fragment includes integer/float and nullable `funcref`/`externref` function signatures,
+The module fragment includes numeric and nullable/nonnullable function/external reference signatures,
 named and numeric
 function/local indices, inline and standalone function exports, flat and folded
 numeric instructions, locals, direct calls, and structured control. Blocks, loops,
@@ -775,11 +780,13 @@ forward references to declarations. A type use alone inherits its parameters and
 results; inline annotations must match the full referenced signature exactly.
 Parameter names in type declarations are documentation only; names in a function's
 inline annotations bind its locals. Inferred signatures reuse the earliest matching
-type or append a new type after all explicit declarations. Recursive groups,
-subtype declarations, nonnullable/typed heap references, and SIMD types remain unsupported.
+canonical type or append a new type after all explicit declarations. Mixed composite
+recursive groups, explicit final/nonfinal subtypes, and named/numeric heap type
+indices are supported. Inline signatures compare closed type identities. GC
+composite types and `v128` are supported.
 Tables support named/numeric indices, inline and standalone exports, i32/i64
-address widths, and nullable `funcref`/`externref` types (including `(ref null ...)`
-spellings). The inline `(table funcref (elem ...))` abbreviation creates a fixed-size
+address widths, and nullable/nonnullable abstract or concrete function/external
+reference types (including `(ref null ...)` and `(ref ...)` spellings). The inline `(table funcref (elem ...))` abbreviation creates a fixed-size
 table and an active element segment. Standalone active, passive, and declarative
 element segments accept function indices, `ref.func`, nullable function/external references,
 and immutable-global reference expressions. Tables accept explicit reference initializers;
@@ -819,7 +826,7 @@ type/limit matching, including a memory/table's current size after growth.
 `assert_unlinkable` first validates the source and then checks missing providers,
 missing exports, external kinds, and compatible types/limits. Unsupported
 dependencies remain unsupported and do not pass a linking assertion.
-Globals accept i32/i64/f32/f64 and nullable function/external references, immutable or
+Globals accept i32/i64/f32/f64 and nullable/nonnullable function/external references, immutable or
 `(mut ...)`, named/numeric indices, inline/repeated exports, and imports.
 Functions use flat/folded `global.get` and `global.set`; writes require a mutable
 global with a matching value type. Script `get` actions read exported globals
@@ -869,8 +876,9 @@ IEEE arithmetic, literal rounding, and native execution correctness are deferred
 No float correctness assumptions or custom axioms were added.
 
 Script arguments accept `ref.null func`, `ref.null extern`, and `ref.extern N`.
-Result assertions compare concrete nulls and external identities, and support the
-`(ref.null)`, `(ref.func)`, and `(ref.extern)` reference result patterns. Result
+Result assertions compare external identities, and support the
+`(ref.null)`, `(ref.func)`, and `(ref.extern)` reference result patterns. Annotated null
+results match any null; the `ref.extern` wildcard matches any reference. Result
 counts must match exactly. Simple module start declarations are also elaborated.
 Trap assertions check the trap outcome; diagnostic strings are not compared because
 our runtime currently records no trap reason. Each file starts with a fresh store.
@@ -899,31 +907,63 @@ finishes. Host execution correctness is deferred alongside native float executio
 certified runner still stops at host invocation. Unknown host handles remain stuck.
 `tests/spectest.wast` covers these behaviors and mismatched imports.
 
-The pinned i32/i64 scripts now have **872 passed commands, 0 failed, 4 unsupported**;
-only malformed assertions remain. Across all twenty-eight pinned scripts there are
-**20444 passed commands, 0 failed, 155 unsupported**. `f32` and `f64` each
-pass 2512 commands, with two malformed assertions unsupported. Float bitwise,
-comparison, conversion, and miscellaneous scripts pass completely. Memory size/grow
-and generated fill/copy/init scripts also pass completely. The remaining reference
-and global gaps involve typed/GC/exception references and script syntax. Detailed counts, the fixture revision, and the license
-are in `tests/testsuite/`. These totals count module commands and dependent actions;
-unsupported syntax in a module prevents actions against that module from running.
-A further 44 pinned scripts exercise control flow, calls/locals, signatures, scalar
-expressions, imports/exports/linking, data/elements, start functions, loads/stores,
-alignment, and memory64. Nineteen pass completely. Across all **72 scripts**, the
-measured results are **26240 passed, 1 failed, 787 unsupported**. The one failure is
-`select.wast` command 132: a valid unreachable untyped select produces bottom, which
-can subsequently be used as a reference. Our concrete numeric-select typing currently
-rejects it. This is a known validation completeness gap, retained as a failure.
-`tests/check-wast.sh` checks the recorded counts, including that known failure; its
-success does not mean every upstream assertion passes.
+The pinned scripts now exercise integer/float numerics, control flow, calls and locals,
+imports/exports/linking, globals, scalar and bulk memory, memory64, references and
+scalar/bulk tables, quoted/binary decoding, tail calls, exceptions, GC references,
+structs and arrays, mixed recursive composite type validation, standard SIMD, and relaxed SIMD.
+Across all 257 unmodified pinned top-level scripts, **65,202 commands pass, 0 fail, and 0 remain
+unsupported**; all 257 scripts pass completely. Detailed counts, the fixture revision,
+and the license are in
+[`tests/testsuite/README.md`](tests/testsuite/README.md). Counts include module commands;
+an unsupported module makes its dependent actions unavailable.
+`tests/check-wast.sh --full` checks the complete inventory and exact command counts.
+`tests/testsuite/inventory.tsv` separates pending scripts from the passing baseline as future
+coverage is added; all current entries are complete.
+These checks establish regression coverage for the selected fragment, not full Wasm 3.0 conformance.
+
+Module definitions are validated without allocation or start execution and leave
+the current instance selected. Explicit instances allocate fresh defined resources
+and resolve imports using the registrations in force at instantiation time.
+Definitions and instances have separate named environments. The focused
+`tests/module-definitions.wast` checks repeated starts, independent globals,
+memories and tables, shared imports, and trapping initialization effects.
+
+Quoted text concatenates byte strings before parsing, and is decoded when its
+command runs. Module commands and invalid/malformed assertions use the same
+source decoder. Malformed assertions check decoding only; a validation error does
+not satisfy them. Unsupported features stay unsupported. Folded expressions
+require folded operands, and inline signatures require an available referenced type.
+`tests/quoted-modules.wast` and `Wasm/TextTests.lean` include positive quoted modules
+and cases where malformed assertions must fail.
+
+Binary modules decode directly into the same source `Module` used by text validation,
+linking, and instantiation. `Wasm/Binary/Reader.lean` checks bounded signed/unsigned LEB128,
+UTF-8 names, and nested byte boundaries. `Wasm/Binary/Decode.lean` handles section ordering,
+function/code and data counts, mixed recursive types, scalar instructions, references,
+tail calls, exceptions, structs and arrays,
+memargs, bulk operations, and all supported module sections. Custom sections are skipped
+within their boundaries. Errors carry byte offsets; recognized excluded features report
+unsupported coverage. Decoder correctness is deferred.
+
+`Wasm/TypeMatchingAlgorithm.lean` and `Wasm/TypeValidationAlgorithm.lean` contain ordinary
+boolean checks for heap/value/result matching and recursive composite type sections.
+Their separate success-soundness theorems justify subtyping, scope, type closure,
+nonfinal supertype requirements, and parameter contravariance/result covariance.
+Typed references work through functions, locals, globals, tables, element segments,
+imports, indirect calls, and `call_ref`. Nonnullable locals require definite initialization.
+`tests/typed-references.wast` covers source and binary reference operations and typed imports;
+`Wasm/TypeAlgorithmTests.lean` includes kernel-reduced successes and subtype rejections.
 
 The CLI prints failures by command ordinal and groups unsupported reasons.
 Exit codes are 0 for complete success, 1 for failures or unreadable/malformed
 scripts, and 2 for incomplete coverage. Execution defaults to 10,000 semantic steps
 per module/action; `--fuel STEPS` raises the budget for long scripts. The pinned
-regression uses 4,000,000 steps for generated whole-page memory scans. Exhaustion
-is a failure, never a trap or successful assertion. Modules exceeding the runtime's
+regression uses 4,000,000 steps for generated whole-page memory scans and a
+64-frame call-depth limit, raised to 256 for `call`, `call_indirect`, and `call_ref`,
+whose valid assertions recurse as far as 200 calls. Native execution defaults to 1,024 active function
+frames; `--call-depth FRAMES` changes this independent resource limit.
+`assert_exhaustion` requires call-stack resource exhaustion. Running out of fuel
+is a failure, never a trap or successful exhaustion assertion. Modules exceeding the runtime's
 allocation budget report unsupported coverage; their static validation is independent
 of that embedder policy.
 
@@ -946,14 +986,17 @@ scalar/bulk table instructions check operand heap kinds, table address widths, a
 `ref.func` declarations, including in unreachable code. The numeric/reference fragment includes nested blocks, loops,
 conditionals, and all three branch forms. Each structured body is checked in a
 fresh operand frame with its own parameters and results. Branch targets use block
-results or loop parameters; `br_table` requires matching target signatures. This
+results or loop parameters; `br_table` checks operand subtyping against every target. This
 prevents an inner instruction from consuming operands below its frame boundary.
 
 Code after `unreachable`, `return`, `br`, or `br_table` is checked with a polymorphic
 stack prefix. Known operand types, extra results, and indices are still checked.
-An untyped `select` with unknown operands tries all four numeric result types;
-it does not yet preserve bottom for a later reference consumer. The soundness proof
-reconstructs an appropriate concrete stack prefix. The structural recursion budget is computed from the instruction tree and is distinct
+Validation-only stack types include `Types.ValType.bot`. Untyped `select` accepts
+numeric or bottom operands and preserves bottom when both operands are unknown,
+so the valid `select.wast` reference consumer now succeeds. The rich typing judgments
+embed the legacy judgments and permit subtype-compatible stacks without introducing
+bottom numeric source/runtime values. The structural recursion budget is computed
+from the instruction tree and is distinct
 from execution fuel. An upfront feature scan ensures unsupported features are not
 classified as invalid just because an earlier supported instruction also fails
 validation.
@@ -967,10 +1010,85 @@ assertions preserve the current instance and store. Assertion diagnostic strings
 are not compared. **Rejection correctness and completeness are not yet proved**;
 negative assertions are algorithmic regressions, not proofs of invalidity.
 
-`assert_malformed`, exhaustion assertions, quoted/binary modules,
-shared memories/atomics, other host modules, and nonnullable or typed heap
-references/tables,
-and SIMD values remain explicitly unsupported. No unsupported assertion is
-counted as a pass. These counts do not claim full WebAssembly 3.0 conformance.
-Next steps include formal IEEE arithmetic and native execution soundness, rejection
-correctness for the supported fragment, and typed heap reference validation.
+Shared memories/atomics and host modules other than `spectest` remain unsupported.
+Proposal, legacy, and custom subdirectory suites are outside this pinned top-level regression.
+No unsupported assertion is counted as a pass. Parser/decoder correctness,
+rejection correctness/completeness, full Wasm type safety, and native float/host
+execution soundness remain future proof work.
+
+
+## Tail calls, exceptions, and GC
+
+Direct, indirect, and reference tail calls use certified reductions that replace the
+caller activation. Exception handling supports tags, `throw`, `throw_ref`, `try_table`,
+and its four catch forms. Tag imports preserve identity, and uncaught exceptions have
+a distinct execution outcome used by `assert_exception`.
+
+Type contexts contain function, struct, and array composites. Recursive closure,
+subtyping, packed storage, field mutability, and function variance are checked by the
+ordinary validator with separate success-soundness theorems. Function-only uses
+explicitly project a function signature and reject other composite kinds.
+
+GC reference operations currently include `ref.i31`, `i31.get_s`, `i31.get_u`, `ref.eq`,
+`any.convert_extern`, and `extern.convert_any`. Conversions preserve nullability and
+reference identity. The permitted operations also run in certified constant evaluation.
+`ref.test` and `ref.cast` have certified matching and trap reductions.
+`br_on_cast` and `br_on_cast_fail` refine branch and fallthrough reference types,
+including their distinct nullability, and have certified conditional branch reductions.
+Null typing uses the correct bottom for function, external, exception, and GC hierarchies.
+`tests/gc-references.wast` covers this fragment; the upstream `ref_null.wast` passes fully.
+Struct and array address spaces and instances are modeled. Allocation helpers preserve
+existing addresses, and references obtain their closed types from the store. Packed field
+storage implements truncation and signed/unsigned reads, with kernel-checked examples.
+Struct allocation, defaults, reads, and mutation are supported. Array allocation,
+fixed/data/element constructors, reads, mutation, length, fill, copy, and data/element
+initialization have certified reductions. Copy snapshots its source, including overlapping
+ranges; segment operations respect dropped segments and zero-length bounds.
+Allocating constant expressions thread the store through globals, table initializers,
+and element expressions. Functions are allocated first so stored `ref.func` values
+refer to the final function addresses. The GC allocation budget is 1,048,576 array
+elements; exceeding it can leave execution stuck rather than establish a Wasm trap.
+The upstream struct, array, reference, recursive type, tail-call, and exception scripts
+in the manifest pass completely. `tests/structures.wast` also checks aliases across
+globals and tables, packed fields, allocation identity, and forward function references.
+
+The GC rules and executable checks are in `Wasm/StructValidation.lean`,
+`Wasm/ArrayValidation.lean`, `Wasm/Structures.lean`, and `Wasm/Arrays.lean`.
+`tests/gc-cast-branches.wast` exercises binary cast branches and static rejection,
+and Lean tests execute the certified reference runner and inspect soundness axioms.
+
+## SIMD and relaxed SIMD
+
+`v128` is a 128-bit value throughout source types, runtime matching, function signatures,
+locals, globals, constant expressions, and struct/array fields. Lane zero occupies the least
+significant bits. `VectorOpcode` records the complete SIMD opcode set; `VectorOp` carries
+shuffle/lane immediates, a memory index, and a memory argument. Text and binary decoding
+recognize vector constants, including the `0xfd` opcode space. Unknown instruction names
+are malformed rather than accepted as valid-but-unsupported instructions.
+
+`Vectors.lean` defines integer and bitwise execution equations using arbitrary precision
+intermediates. They cover wrapping and saturating arithmetic, masked shifts, signed/unsigned
+comparisons, population counts, masks, shuffle/swizzle, narrowing/widening, pairwise addition,
+extended multiplication, dot products, Q15 rounding/saturation, and floating bitwise abs/neg.
+`VectorStepper.lean` adds vector memory operations: full loads/stores, extending and splat
+loads, zero loads, and lane loads/stores. Address sums do not wrap before bounds checks.
+The certified configuration stepper includes vector reductions under labels, handlers, and
+activation frames. `stepVectors_sound` and resource preservation are kernel checked.
+
+`VectorValidation.lean` defines declarative stack effects and immediate/memory constraints.
+The ordinary executable checker has a separate success-soundness theorem and participates
+in `validate_sound`; malformed lane literals and invalid lane bounds remain distinct checks.
+`NativeVector.lean` shares the scalar native floating arithmetic and conversion backend.
+Vector NaN expectations inspect individual lanes, and script expectations support `either`.
+Native floating arithmetic remains outside certified execution soundness.
+
+Relaxed SIMD chooses the specification's deterministic profile: swizzle zeros out-of-range
+indices, truncations saturate, lane selection uses bit selection, Q15 uses ordinary saturating
+rounding, and multiply-add uses separate multiplication and addition. Min/max use the ordinary
+Wasm operations; dot products use signed lane arithmetic. Result alternatives are checked
+without claiming that this profile enumerates every allowed relaxed result.
+
+The regression includes all 59 standard SIMD and 7 relaxed SIMD scripts. `VectorTests.lean`
+checks arithmetic overflow, signed shifts, Q15 saturation, narrowing, dot product overflow,
+and invalid immediates/alignment. `tests/vectors.wast` checks vectors across calls, globals,
+GC storage, memory64 overflow traps, and lane access at the last memory byte.

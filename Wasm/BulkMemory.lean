@@ -81,6 +81,8 @@ inductive BulkStep : Store → Frame → List AdminInstr → Store → List Admi
       BulkStep store state (values vs ++ es ++ tail) store' (values vs ++ es' ++ tail)
   | label : BulkStep store state body store' body' →
       BulkStep store state [.label n continuation body] store' [.label n continuation body']
+  | handler : BulkStep store state body store' body' →
+      BulkStep store state [.handler catches body] store' [.handler catches body']
   | frame : BulkStep store inner body store' body' →
       BulkStep store state [.frame n inner body] store' [.frame n inner body']
 
@@ -88,24 +90,24 @@ theorem BulkStep.functions_preserved (h : BulkStep store state es store' es') :
     store'.funcs = store.funcs := by
   induction h with
   | redex h => cases h <;> rfl
-  | context _ ih | label _ ih | frame _ ih => exact ih
+  | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
 
 theorem BulkStep.globals_preserved (h : BulkStep store state es store' es') :
     store'.globals = store.globals := by
   induction h with
   | redex h => cases h <;> rfl
-  | context _ ih | label _ ih | frame _ ih => exact ih
+  | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
 
 theorem BulkStep.memories_preserved (h : BulkStep store state es store' es') :
     store'.mems = store.mems := by
   induction h with
   | redex h => cases h <;> rfl
-  | context _ ih | label _ ih | frame _ ih => exact ih
+  | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
 
 theorem BulkStep.data_count_preserved (h : BulkStep store state es store' es') :
     store'.datas.length = store.datas.length := by
   induction h with
   | redex h => cases h <;> simp [Store.dropData]
-  | context _ ih | label _ ih | frame _ ih => exact ih
+  | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
 
 end Wasm

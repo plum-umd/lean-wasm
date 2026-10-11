@@ -42,10 +42,16 @@ def ImportMatches (store : Store) (types : TypeContext) (desc : ImportDesc) (add
     (definedTypes : List Types.DefinedType := []) : Prop :=
   match desc, address with
   | .func x, .func address =>
-    match store.func? address, types[x]? with
+    match store.func? address, types.func? (x) with
     | some function, some type =>
       (checkRuntimeHeap function.runtimeType.heap
         ((definedTypes[x]?).getD type.definedType).heap).isSome = true
+    | _, _ => False
+  | .tag x, .tag address => match store.tags[address.index]?, types.func? (x) with
+    | some tag, some type =>
+      let expected := ((definedTypes[x]?).getD type.definedType).heap
+      (checkRuntimeHeap tag.definedType.heap expected).isSome = true ∧
+        (checkRuntimeHeap expected tag.definedType.heap).isSome = true
     | _, _ => False
   | .global type, .global address => match store.global? address with
     | none => False
@@ -99,6 +105,9 @@ def importedModule (types : TypeContext) (addresses : List ExternAddr)
     mems := addresses.filterMap fun address => match address with
       | .memory a => some a
       | _ => none,
+    tags := addresses.filterMap fun address => match address with
+      | .tag a => some a
+      | _ => none,
     tables := addresses.filterMap fun address => match address with
       | .table a => some a
       | _ => none }
@@ -113,11 +122,19 @@ def initializerTypingStore (store : Store) (module : ModuleInst) : Store :=
   { store with funcs := store.funcs ++
       (module.funcs.zip module.funcTypeIndices).filterMap fun (address, typeIdx) =>
         if address.index < store.funcs.length then none
-        else module.types[typeIdx]?.map fun type =>
+        else (module.types.func? (typeIdx)).map fun type =>
           ⟨type, module, .wasm ⟨typeIdx, [], []⟩⟩ }
 
 inductive GlobalsEvaluated : Store → ModuleInst → List Global →
     Store → ModuleInst → List Value → Prop where
+  | allocating (he : ConstAllocated store module global.init allocated value)
+      (ht : Typed (initializerTypingStore allocated module) value global.type.valType)
+      (hr : GlobalsEvaluated
+        (allocated.allocateGlobal ⟨global.type, value⟩).2
+        {module with globals := module.globals ++
+          [(allocated.allocateGlobal ⟨global.type, value⟩).1]}
+        rest final finalModule vs) :
+      GlobalsEvaluated store module (global :: rest) final finalModule (value :: vs)
   | empty : GlobalsEvaluated store module [] store module []
   | cons (he : ConstEval store module global.init [] [value])
       (ht : Typed (initializerTypingStore store module) value global.type.valType)
@@ -145,8 +162,28 @@ private def evaluateGlobals (store : Store) (module : ModuleInst) : (globals : L
             .cons value.property ht.down next.property⟩
       | none => exact none
 
+private def evaluateAllocatedGlobals (store : Store) (module : ModuleInst) :
+    (globals : List Global) → Option {next : Store × ModuleInst × List Value //
+      GlobalsEvaluated store module globals next.1 next.2.1 next.2.2}
+  | [] => some ⟨(store, module, []), .empty⟩
+  | global :: rest => by
+    match evalAllocatedConst store module global.init with
+    | none => exact none
+    | some evaluated =>
+      let allocatedStore := evaluated.val.1
+      let value := evaluated.val.2
+      match checkValue (initializerTypingStore allocatedStore module) value global.type.valType with
+      | none => exact none
+      | some typed =>
+        let allocated := allocatedStore.allocateGlobal ⟨global.type, value⟩
+        let nextModule := {module with globals := module.globals ++ [allocated.1]}
+        exact (evaluateAllocatedGlobals allocated.2 nextModule rest).map fun next =>
+          ⟨(next.val.1, next.val.2.1, value :: next.val.2.2),
+            .allocating evaluated.property typed.down next.property⟩
+
 def ExternIdx.resolve? (module : ModuleInst) : ExternIdx → Option ExternAddr
   | .func x => (module.funcAddr? x).map .func
+  | .tag x => module.tags[x]?.map .tag
   | .global x => (module.globalAddr? x).map .global
   | .memory x => (module.memAddr? x).map .memory
   | .table x => (module.tableAddr? x).map .table
@@ -168,7 +205,7 @@ private def allocateExports (module : ModuleInst) : (entries : List Export) →
 
 inductive FunctionSignatures (types : TypeContext) : List Func → List FuncType → Prop where
   | empty : FunctionSignatures types [] []
-  | cons (ht : types[function.typeIdx]? = some ft)
+  | cons (ht : types.func? (function.typeIdx) = some ft)
       (hr : FunctionSignatures types rest signatures) :
       FunctionSignatures types (function :: rest) (ft :: signatures)
 
@@ -176,7 +213,7 @@ private def functionSignatures (types : TypeContext) : (functions : List Func) �
     Option { signatures : List FuncType // FunctionSignatures types functions signatures }
   | [] => some ⟨[], .empty⟩
   | function :: rest => by
-    match ht : types[function.typeIdx]? with
+    match ht : types.func? (function.typeIdx) with
     | none => exact none
     | some ft => exact (functionSignatures types rest).map fun result =>
         ⟨ft :: result.val, .cons ht result.property⟩
@@ -226,6 +263,33 @@ private def evaluateRefs (store : Store) (module : ModuleInst) :
         | none => exact none
       | _ => exact none
 
+inductive AllocatedRefs (module : ModuleInst) : Store → List (ValType × List Instr) →
+    Store → List RefValue → Prop where
+  | empty : AllocatedRefs module store [] store []
+  | cons (he : ConstAllocated store module expression allocated (.ref reference))
+      (ht : Typed (initializerTypingStore allocated module) (.ref reference) type)
+      (hr : AllocatedRefs module allocated rest next references) :
+      AllocatedRefs module store ((type, expression) :: rest) next (reference :: references)
+
+private def evaluateAllocatedRefs (store : Store) (module : ModuleInst) :
+    (expressions : List (ValType × List Instr)) →
+    Option {result : Store × List RefValue //
+      AllocatedRefs module store expressions result.1 result.2}
+  | [] => some ⟨(store, []), .empty⟩
+  | (type, expression) :: rest => by
+    match evalAllocatedConst store module expression with
+    | none => exact none
+    | some evaluated =>
+      match hv : evaluated.val.2 with
+      | .ref reference =>
+        match checkValue (initializerTypingStore evaluated.val.1 module) (.ref reference) type with
+        | none => exact none
+        | some typed =>
+          exact (evaluateAllocatedRefs evaluated.val.1 module rest).map fun next =>
+            ⟨(next.val.1, reference :: next.val.2),
+              .cons (hv ▸ evaluated.property) typed.down next.property⟩
+      | _ => exact none
+
 def Module.tableExpressions (module : Module) : List (ValType × List Instr) :=
   module.tables.map fun table => (table.type.refType, table.init)
 def Module.elemExpressions (module : Module) : List (ValType × List Instr) :=
@@ -248,7 +312,8 @@ def allocatedModule (store : Store) (module : Module) (imports : ModuleInst) : M
     datas := (freshAddresses store.datas.length module.datas.length).map DataAddr.mk,
     tables := imports.tables ++
       (freshAddresses store.tables.length module.tables.length).map TableAddr.mk,
-    elems := (freshAddresses store.elems.length module.elems.length).map ElemAddr.mk }
+    elems := (freshAddresses store.elems.length module.elems.length).map ElemAddr.mk,
+    tags := imports.tags ++ (freshAddresses store.tags.length module.tags.length).map TagAddr.mk }
 
 def allocatedStore (store : Store) (module : Module) (owner : ModuleInst)
     (globals : List Value) (signatures : List FuncType)
@@ -262,7 +327,11 @@ def allocatedStore (store : Store) (module : Module) (owner : ModuleInst)
     datas := store.datas ++ module.datas.map fun segment => ⟨segment.bytes⟩,
     tables := store.tables ++ (module.tables.zip tableValues).map fun (table, reference) =>
       ⟨table.type, Array.replicate table.type.min reference⟩,
-    elems := store.elems ++ allocateElems module.elems elemValues }
+    elems := store.elems ++ allocateElems module.elems elemValues,
+    tags := store.tags ++ module.tags.filterMap (fun x => do
+      let ft ← module.types.func? (x)
+      return ⟨ft, (owner.definedTypes[x]?).getD ft.definedType⟩),
+    exns := store.exns, structs := store.structs, arrays := store.arrays }
 
 def Module.initializationCode (module : Module) : List Instr :=
   ((module.elems.zipIdx).flatMap fun (segment, index) => segment.initializer index) ++
@@ -272,8 +341,40 @@ def Module.initializationCode (module : Module) : List Instr :=
 /-- Preparation follows evalglobal then allocmodule, including the specification's
 temporary global instances. Only the final instances occur in the resulting address map.
 -/
+def allocatedFunctions (store : Store) (module : Module) (owner : ModuleInst)
+    (signatures : List FuncType) : Store :=
+  {store with funcs := store.funcs ++ (module.funcs.zip signatures).map fun (function, type) =>
+    ⟨type, owner, .wasm function⟩}
+
+def Module.allocatingInitializers (module : Module) : Bool :=
+  let allocating : List Instr → Bool := fun code => code.any fun
+    | .structNew _ _ | .arrayOp (.new_ _ _) | .arrayOp (.newFixed _ _) => true
+    | _ => false
+  module.globals.any (fun global => allocating global.init) ||
+    module.tables.any (fun table => allocating table.init) ||
+    module.elems.any (fun elem => elem.init.any allocating)
+
 inductive ClosedModulePrepared (store : Store) (module : Module) (addresses : List ExternAddr) :
     Configuration → Prop where
+  | allocating (hi : ImportsMatch store module.types module.imports addresses
+        (module.resolvedTypes?.getD []))
+      (hf : FunctionSignatures module.types module.funcs signatures)
+      (he : ExportsAllocated (allocatedModule store module (linkedImports module addresses))
+        module.exports entries)
+      (hg : GlobalsEvaluated
+        (allocatedFunctions store module
+          {allocatedModule store module (linkedImports module addresses) with exports := entries}
+          signatures)
+        (initializerModule store module addresses) module.globals temporary temporaryModule vs)
+      (ht : AllocatedRefs temporaryModule temporary module.tableExpressions tablesStore tableValues)
+      (hel : AllocatedRefs temporaryModule tablesStore module.elemExpressions final elemValues) :
+      ClosedModulePrepared store module addresses
+        ⟨allocatedStore final module
+            {allocatedModule store module (linkedImports module addresses) with exports := entries}
+            [] [] tableValues elemValues,
+          {module :=
+            {allocatedModule store module (linkedImports module addresses) with exports := entries}},
+          instructions module.initializationCode⟩
   | prepare (hi : ImportsMatch store module.types module.imports addresses
         (module.resolvedTypes?.getD []))
       (hg : GlobalsEvaluated store (initializerModule store module addresses)
@@ -312,29 +413,54 @@ private def checkedPrepareClosedInstantiation (store : Store) (module : Module)
       (module.resolvedTypes?.getD []) then
     if module.mems.all (fun memory => memory.min ≤ budgetPages) &&
         module.tables.all (fun table => table.type.min ≤ tableGrowthBudget) then
-      match evaluateGlobals store (initializerModule store module addresses) module.globals with
-      | none => exact .error .initializer
-      | some globals =>
-        match evaluateRefs globals.val.1 globals.val.2.1 module.tableExpressions with
+      if module.allocatingInitializers then
+        match functionSignatures module.types module.funcs with
+        | none => exact .error .allocation
+        | some signatures =>
+          let base := allocatedModule store module (linkedImports module addresses)
+          match allocateExports base module.exports with
+          | none => exact .error .allocation
+          | some entries =>
+            let owner := {base with exports := entries.val}
+            let initialStore := allocatedFunctions store module owner signatures.val
+            match evaluateAllocatedGlobals initialStore
+                (initializerModule store module addresses) module.globals with
+            | none => exact .error .initializer
+            | some globals =>
+              match evaluateAllocatedRefs globals.val.1 globals.val.2.1 module.tableExpressions with
+              | none => exact .error .initializer
+              | some tables =>
+                match evaluateAllocatedRefs tables.val.1 globals.val.2.1 module.elemExpressions with
+                | none => exact .error .initializer
+                | some elems =>
+                  exact .ok ⟨⟨allocatedStore elems.val.1 module owner [] [] tables.val.2 elems.val.2,
+                    {module := owner}, instructions module.initializationCode⟩,
+                    .allocating hi signatures.property entries.property globals.property
+                      tables.property elems.property⟩
+      else
+        match evaluateGlobals store (initializerModule store module addresses) module.globals with
         | none => exact .error .initializer
-        | some tableValues =>
-          match evaluateRefs globals.val.1 globals.val.2.1 module.elemExpressions with
+        | some globals =>
+          match evaluateRefs globals.val.1 globals.val.2.1 module.tableExpressions with
           | none => exact .error .initializer
-          | some elemValues =>
-            match functionSignatures module.types module.funcs with
-            | none => exact .error .allocation
-            | some signatures =>
-              let base := allocatedModule globals.val.1 module
-                (linkedImports module addresses)
-              match allocateExports base module.exports with
+          | some tableValues =>
+            match evaluateRefs globals.val.1 globals.val.2.1 module.elemExpressions with
+            | none => exact .error .initializer
+            | some elemValues =>
+              match functionSignatures module.types module.funcs with
               | none => exact .error .allocation
-              | some entries =>
-                let owner := { base with exports := entries.val }
-                exact .ok ⟨⟨allocatedStore globals.val.1 module owner globals.val.2.2
-                  signatures.val tableValues.val elemValues.val,
-                  { module := owner }, instructions module.initializationCode⟩,
-                  .prepare hi globals.property tableValues.property elemValues.property
-                    signatures.property entries.property⟩
+              | some signatures =>
+                let base := allocatedModule globals.val.1 module
+                  (linkedImports module addresses)
+                match allocateExports base module.exports with
+                | none => exact .error .allocation
+                | some entries =>
+                  let owner := { base with exports := entries.val }
+                  exact .ok ⟨⟨allocatedStore globals.val.1 module owner globals.val.2.2
+                    signatures.val tableValues.val elemValues.val,
+                    { module := owner }, instructions module.initializationCode⟩,
+                    .prepare hi globals.property tableValues.property elemValues.property
+                      signatures.property entries.property⟩
     else exact .error .resourceLimit
   else exact .error .imports
 

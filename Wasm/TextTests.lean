@@ -112,11 +112,10 @@ private def script (s : String) : IO Report := do
     (assert_return (invoke \"f\") (i32.const 7))"
   check (errors.passed == 2 && errors.failed == 1 && errors.unsupported == 0)
     "type elaboration errors cannot count as validator rejection"
-  for text in ["(module (type (struct)))", "(module (type (func (param v128))))",
-    "(module (rec (type (func))))"] do
-    let .ok [expr] := parse text | throw (IO.userError "unsupported type fixture")
-    check (match module expr with
-      | .error (.unsupported _) => true | _ => false) "unsupported type forms")
+  for text in ["(module (type (func (param v128))))"] do
+    let .ok [expr] := parse text | throw (IO.userError "vector type fixture")
+    let .ok source := module expr | throw (IO.userError "vector type elaboration")
+    check (Validation.validate source).isOk "vector types are supported")
 
 #eval (show IO Unit from do
   for text in [
@@ -146,11 +145,10 @@ private def script (s : String) : IO Report := do
     (module (func) (table 0 funcref) (elem (i32.const 0) func 0))"
   check (reports.passed == 1 && reports.failed == 1 && reports.unsupported == 0)
     "element bounds are instantiation traps, not validation rejection"
-  for text in ["(module (table 1 (ref func)))",
-    "(module (table 1 funcref) (func i32.const 0 v128.const))"] do
+  for text in ["(module (table 1 funcref) (func i32.const 0 v128.const))"] do
     let .ok [expr] := parse text | throw (IO.userError "unsupported table fixture")
     check (match module expr with
-      | .error (.unsupported _) => true | _ => false) "unsupported reference/table forms")
+      | .error (.invalid _) => true | _ => false) "vector constants require lane immediates")
 
 #eval (show IO Unit from do
   let matching ← script "
@@ -170,7 +168,7 @@ private def script (s : String) : IO Report := do
     (assert_return (invoke \"extern\" (ref.null extern)) (ref.null func))
     (module (func (export \"f\") (result funcref) ref.null func))
     (assert_return (invoke $M \"f\") (ref.func))"
-  check (matching.passed == 7 && matching.failed == 6 && matching.unsupported == 0)
+  check (matching.passed == 8 && matching.failed == 5 && matching.unsupported == 0)
     "reference result patterns, exact external identity, arity, and named earlier instances"
   for text in ["(module (table 1 funcref) (func table.get $missing drop))",
     "(module (func ref.func $missing drop))", "(module (start 0) (start 0) (func))"] do
@@ -293,5 +291,59 @@ private def script (s : String) : IO Report := do
     let .ok [expr] := parse text | throw (IO.userError "memory parser fixture")
     check (match Wasm.Text.module expr with
       | .error (.invalid _) => true | _ => false) "invalid memory text syntax"
+
+#eval do
+  let quoted ← script "
+    (module $Q quote
+      \"(func (export \\\"value\\\") (result i32)\"
+      \" (i32.const 42))\")
+    (assert_return (invoke $Q \"value\") (i32.const 42))
+    (assert_invalid (module quote \"(func (result i32))\") \"type mismatch\")
+    (assert_malformed (module quote \"(func\") \"unclosed\")
+    (assert_malformed (module quote \"(func (result i32))\") \"well formed\")
+    (assert_malformed (module quote \"(func nop)\") \"valid\")
+    (assert_malformed (module quote \"(func v128.const i32x4 0 0 0 0)\") \"unsupported\")"
+  check (quoted.passed == 4 && quoted.failed == 3 && quoted.unsupported == 0)
+    "quoted decoding must distinguish malformed, invalid, valid, and unsupported sources"
+
+#eval do
+  let unknown ← script "
+    (assert_malformed (module quote \"(func imaginary.op)\") \"unknown operator\")
+    (assert_malformed (module quote \"(func i32.imaginary)\") \"unknown integer op\")
+    (assert_malformed (module quote \"(func f64.imaginary)\") \"unknown float op\")
+    (assert_malformed (module quote \"(func v128.const i32x4 0 0 0 0)\") \"recognized feature\")"
+  check (unknown.passed == 3 && unknown.failed == 1 && unknown.unsupported == 0)
+    "supported vector instructions must not count as malformed"
+
+#eval do
+  let .ok recursive := parse "
+    (module (func $f (export \"recurse\") (call $f)))
+    (assert_exhaustion (invoke \"recurse\") \"call stack exhausted\")" |
+    throw (IO.userError "recursive script syntax")
+  let depth := runScript recursive 100 3
+  check (depth.passed == 2 && depth.failed == 0) "call depth resource exhaustion"
+  let fuel := runScript recursive 1 3
+  check (fuel.passed == 1 && fuel.failed == 1) "fuel must not satisfy assert_exhaustion"
+  let .ok looping := parse "
+    (module (func (export \"loop\") (loop $l (br $l))))
+    (assert_exhaustion (invoke \"loop\") \"call stack exhausted\")" |
+    throw (IO.userError "looping script syntax")
+  let loop := runScript looping 100 3
+  check (loop.passed == 1 && loop.failed == 1) "loops do not consume call depth"
+  let .ok shallow := parse "
+    (module (func (export \"f\") (block (loop nop))))
+    (assert_return (invoke \"f\"))" |
+    throw (IO.userError "shallow script syntax")
+  let result := runScript shallow 100 1
+  check (result.passed == 2 && result.failed == 0) "labels do not consume call depth"
+  let .ok sequential := parse "
+    (module (func $f) (func (export \"g\") (call $f) (call $f)))
+    (assert_return (invoke \"g\"))" |
+    throw (IO.userError "sequential script syntax")
+  let sequentialResult := runScript sequential 100 2
+  check (sequentialResult.passed == 2 && sequentialResult.failed == 0)
+    "returning releases call depth"
+  let tooShallow := runScript sequential 100 1
+  check (tooShallow.passed == 1 && tooShallow.failed == 1) "exact call depth boundary"
 
 end Wasm.Text.Tests

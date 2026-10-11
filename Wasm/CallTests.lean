@@ -138,7 +138,7 @@ example : RuntimeInstrTyping { returns := some [.i32] } []
     (.cons (.plain (.plain (.plain .const)))
       (.cons (.return_ (input := []) rfl) .empty))
 
-example : FuncTyping [⟨[.i32], [.i32]⟩] [⟨[.i32], [.i32]⟩] [] [] 0
+example : FuncTyping [.func ⟨[.i32], [.i32]⟩] [⟨[.i32], [.i32]⟩] [] [] 0
     ⟨0, [], [.localGet 0, .call 0, .return_]⟩ ⟨[.i32], [.i32]⟩ :=
   .wasm rfl (by decide) (.cons (.plain (.localGet rfl))
     (.cons (.call (ft := ⟨[.i32], [.i32]⟩) rfl)

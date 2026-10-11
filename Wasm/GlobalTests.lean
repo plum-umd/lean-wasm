@@ -103,7 +103,7 @@ example : ¬ GlobalInstrTyping [⟨.const, .i32⟩] (.globalSet 0) [.i32] [] :=
 example : RuntimeInstrTyping { globals := [⟨.var, .i32⟩] } []
     (.block (.val (some .i32)) [.globalGet 0]) [] [.i32] :=
   .block (ft := ⟨[], [.i32]⟩) rfl (.cons (.global (.get rfl)) .empty)
-example : FuncTyping [⟨[], []⟩] [] [⟨.var, .i32⟩] [] 0
+example : FuncTyping [.func ⟨[], []⟩] [] [⟨.var, .i32⟩] [] 0
     ⟨0, [], [.const (.i32 9), .globalSet 0, .return_]⟩ ⟨[], []⟩ :=
   .wasm rfl (by decide) (.cons (.plain (.plain (.plain .const)))
     (.cons (.global (.set rfl)) (.cons (.return_ (input := []) rfl) .empty)))

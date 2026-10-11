@@ -50,7 +50,7 @@ local infix:50 " ≟ " => same
   check "br_table empty" (step [] [i32 0, instr (.brTable [] 8)] ≟ some [instr (.br 8)])
   check "block entry" (step [] [i32 42, instr (.block empty [.nop]), instr .drop] ≟
     some [i32 42, .label 0 [] [instr .nop], instr .drop])
-  let types : TypeContext := [⟨[.i32, .i64], [.i32]⟩, ⟨[.i32], [.i32, .i64]⟩]
+  let types : TypeContext := [.func ⟨[.i32, .i64], [.i32]⟩, .func ⟨[.i32], [.i32, .i64]⟩]
   check "multi-value block parameters" (step types [i32 42, i32 3, i64 7,
     instr (.block (.typeIdx 0) [.drop])] ≟
     some [i32 42, .label 1 [] [i32 3, i64 7, instr .drop]])
@@ -94,7 +94,7 @@ local infix:50 " ≟ " => same
     [i32 99, i64 7, instr (.br 1), instr .unreachable]]]).status ≟ .finished [.i64 7])
   check "multi-value block run" ((run 10 types [i32 42, i32 3, i64 7,
     instr (.block (.typeIdx 0) [.drop])]).status ≟ .finished [.i32 42, .i32 3])
-  check "loop fallthrough" ((run 10 [⟨[.i32], [.i32, .i64]⟩]
+  check "loop fallthrough" ((run 10 [.func ⟨[.i32], [.i32, .i64]⟩]
     [i32 3, instr (.loop (.typeIdx 0) [.const (.i64 7)])]).status ≟
     .finished [.i32 3, .i64 7])
   let infinite := [instr (.loop empty [.br 0])]

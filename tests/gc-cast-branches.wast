@@ -1,0 +1,11 @@
+;; Binary br_on_cast and br_on_cast_fail, plus static rejection cases.
+(module binary "\00\61\73\6d\01\00\00\00\01\05\01\60\00\01\7f\03\02\01\00\07\05\01\01\66\00\00\0a\18\01\16\00\02\64\6e\41\07\fb\1c\fb\18\00\00\6e\6c\00\0b\fb\16\6c\fb\1e\0b")
+(assert_return (invoke "f") (i32.const 7))
+(module binary "\00\61\73\6d\01\00\00\00\01\05\01\60\00\01\7f\03\02\01\00\07\05\01\01\66\00\00\0a\18\01\16\00\02\64\6e\41\07\fb\1c\fb\19\00\00\6e\6b\00\0b\fb\16\6c\fb\1e\0b")
+(assert_return (invoke "f") (i32.const 7))
+(assert_malformed (module binary "\00\61\73\6d\01\00\00\00\01\05\01\60\00\01\7f\03\02\01\00\07\05\01\01\66\00\00\0a\18\01\16\00\02\64\6e\41\07\fb\1c\fb\18\04\00\6e\6c\00\0b\fb\16\6c\fb\1e\0b") "invalid cast branch flags")
+(assert_invalid (module (func (param anyref) (block (result funcref) local.get 0 br_on_cast 0 anyref funcref unreachable) drop)) "type mismatch")
+(assert_invalid (module (func (param i31ref) (block (result structref) local.get 0 br_on_cast 0 i31ref structref unreachable) drop)) "type mismatch")
+(assert_invalid (module (func (param anyref) (block (result i32) local.get 0 br_on_cast 0 anyref i31ref unreachable) drop)) "type mismatch")
+(assert_invalid (module (func (param anyref) (block (result (ref struct)) local.get 0 br_on_cast 0 anyref i31ref unreachable) drop)) "type mismatch")
+(assert_invalid (module (func (param anyref) local.get 0 br_on_cast 99 anyref i31ref drop)) "unknown label")

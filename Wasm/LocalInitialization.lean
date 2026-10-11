@@ -10,7 +10,7 @@ mutual
   def Instr.initializeLocals? (initialized : List Nat) : Instr → Option (List Nat)
     | .localGet x => if x ∈ initialized then some initialized else none
     | .localSet x | .localTee x => some (x :: initialized)
-    | .block _ body | .loop _ body =>
+    | .block _ body | .loop _ body | .tryTable _ _ body =>
       (initializeSequence? initialized body).map fun _ => initialized
     | .if_ _ yes no => do
       let _ ← initializeSequence? initialized yes

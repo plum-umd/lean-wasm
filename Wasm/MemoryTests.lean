@@ -155,7 +155,7 @@ example : MemoryReduces ⟨⟨.i32, 0, none⟩, #[]⟩
     [.instr (.const (.i32 0)), .instr (.memoryGrow 0)] none (values [.i32 4294967295]) :=
   .growFail rfl
 
-example : FuncTyping [⟨[], [.i32]⟩] [] [] [⟨.i32, 0, none⟩] 0
+example : FuncTyping [.func ⟨[], [.i32]⟩] [] [] [⟨.i32, 0, none⟩] 0
     ⟨0, [], [.memorySize 0]⟩ ⟨[], [.i32]⟩ :=
   .wasm rfl (by decide) (.cons (.memory (.size (memoryType := ⟨.i32, 0, none⟩) rfl)) .empty)
 

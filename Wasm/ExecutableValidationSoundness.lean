@@ -32,6 +32,34 @@ theorem consume_eq_some : consume input stack = some base ↔ stack = base ++ in
     refine ⟨base.reverse, ?_, by simp⟩
     simp [h]
 
+theorem castTop_sound (h : castTop context nullable heap = .ok top) :
+    (Types.ValType.ref nullable heap).Valid ⟨context.definedTypes, []⟩ ∧
+      Types.HeapMatches ⟨context.definedTypes, []⟩ heap top ∧
+      top ∈ [Types.HeapType.any, .func, .extern, .exn] := by
+  simp only [castTop] at h
+  split at h
+  · have valid : Types.Algorithm.valValid ⟨context.definedTypes, []⟩
+        (.ref nullable heap) = true := by assumption
+    split at h
+    · cases h
+      exact ⟨Types.Algorithm.valValid_sound valid,
+        Types.Algorithm.heapMatches_sound (by assumption), by simp⟩
+    · split at h
+      · cases h
+        exact ⟨Types.Algorithm.valValid_sound valid,
+          Types.Algorithm.heapMatches_sound (by assumption), by simp⟩
+      · split at h
+        · cases h
+          exact ⟨Types.Algorithm.valValid_sound valid,
+            Types.Algorithm.heapMatches_sound (by assumption), by simp⟩
+        · split at h
+          · cases h
+            exact ⟨Types.Algorithm.valValid_sound valid,
+              Types.Algorithm.heapMatches_sound (by assumption), by simp⟩
+          · contradiction
+  · contradiction
+
+
 private theorem funcHeap_sound (h : functionHeap kind = true) : kind = .func := by
   cases kind <;> simp_all [functionHeap]
 
@@ -162,9 +190,43 @@ private theorem effect_sound (h : effect context i stack = .ok (input, output)) 
   case callIndirect x y =>
     cases ht : context.tables[x]? <;> simp [ht] at h
     split at h <;> simp_all [throw]
-    cases hf : context.types[y]? <;> simp [hf] at h
+    cases hf : context.types.func? (y) <;> simp [hf] at h
     rcases h with ⟨rfl, rfl⟩
     exact .tables (.indirect ht (funcHeap_sound (by assumption)) hf)
+  case vector op =>
+    cases hs : vectorSignature? context.mems op <;> simp [hs] at h
+    rcases h with ⟨rfl, rfl⟩
+    exact .vector (vectorSignature?_sound hs)
+  case arrayOp op =>
+    cases hs : arraySignature? context.types context.definedTypes context.referenceElemTypes
+        context.dataCount op <;> simp [hs] at h
+    rcases h with ⟨rfl, rfl⟩
+    exact .arrays (arraySignature?_sound hs)
+  case structNew x default =>
+    cases hs : structSignature? context.types (.structNew x default) <;> simp [hs] at h
+    rcases h with ⟨rfl, rfl⟩
+    exact .structures (structSignature?_sound hs)
+  case structGet x y signed =>
+    cases hs : structSignature? context.types (.structGet x y signed) <;> simp [hs] at h
+    rcases h with ⟨rfl, rfl⟩
+    exact .structures (structSignature?_sound hs)
+  case structSet x y =>
+    cases hs : structSignature? context.types (.structSet x y) <;> simp [hs] at h
+    rcases h with ⟨rfl, rfl⟩
+    exact .structures (structSignature?_sound hs)
+  case refTest nullable heap =>
+    cases ht : castTop context nullable heap <;> simp [ht, bind, Except.bind] at h
+    rcases h with ⟨rfl, rfl⟩
+    obtain ⟨valid, matched, top⟩ := castTop_sound ht
+    exact .refTest valid matched top
+  case refCast nullable heap =>
+    cases ht : castTop context nullable heap <;> simp [ht, bind, Except.bind] at h
+    rcases h with ⟨rfl, rfl⟩
+    obtain ⟨valid, matched, top⟩ := castTop_sound ht
+    exact .refCast valid matched top
+  case gcReference op =>
+    cases h
+    exact .gcReference
   case refNull kind =>
     cases h
     exact .references .null
@@ -390,20 +452,427 @@ theorem checkCode_sound
   obtain ⟨padding, hp, derivation⟩ := checkScoped_sound (by assumption)
   simpa [hp rfl] using derivation
 
+private theorem validationType_refl (context : Types.Context) (t : Types.ValType) :
+    Types.ValMatches context t t := by
+  cases t with
+  | i32 => exact .i32
+  | i64 => exact .i64
+  | f32 => exact .f32
+  | f64 => exact .f64
+  | v128 => exact .v128
+  | bot => exact .bot
+  | ref nullable heap => exact .ref (Types.RefMatches.refl context ⟨nullable, heap⟩)
+
+private theorem validationResult_refl (context : Types.Context) (ts : List Types.ValType) :
+    Types.ResultMatches context ts ts := by
+  induction ts with
+  | nil => exact .nil
+  | cons t ts ih => exact .cons (validationType_refl context t) ih
+
+private theorem validationResult_append
+    (a : Types.ResultMatches context as bs) (b : Types.ResultMatches context cs ds) :
+    Types.ResultMatches context (as ++ cs) (bs ++ ds) := by
+  induction a with
+  | nil => exact b
+  | cons h _ ih => exact .cons h ih
+
+private theorem validationResult_reverse (h : Types.ResultMatches context as bs) :
+    Types.ResultMatches context as.reverse bs.reverse := by
+  induction h with
+  | nil => exact .nil
+  | cons h _ ih =>
+    simpa using validationResult_append ih (Types.ResultMatches.cons h .nil)
+
+private theorem popBottom_sound (h : popBottom context dead required stack = some result) :
+    stack ++ result.missing = result.actual ++ result.base ∧
+      Types.ResultMatches context result.actual required ∧
+      (dead = false → result.missing = []) := by
+  induction required generalizing stack result with
+  | nil =>
+    simp only [popBottom, Option.some.injEq] at h
+    subst result
+    exact ⟨by simp, .nil, by simp⟩
+  | cons t types ih =>
+    cases stack with
+    | nil =>
+      cases dead with
+      | false => simp [popBottom] at h
+      | true =>
+        simp only [popBottom, ↓reduceIte, Option.some.injEq] at h
+        subst result
+        exact ⟨by simp, validationResult_refl _ _, by simp⟩
+    | cons a stack =>
+      by_cases hmatches :
+          Types.Algorithm.valMatches (Types.Algorithm.budget context a t) context a t = true
+      · cases hp : popBottom context dead types stack with
+        | none => simp [popBottom, hmatches, hp] at h
+        | some popped =>
+          simp [popBottom, hmatches, hp] at h
+          subst result
+          obtain ⟨split, typed, missing⟩ := ih hp
+          refine ⟨by simpa using congrArg (a :: ·) split, .cons ?_ typed, missing⟩
+          exact Types.Algorithm.valMatches_sound hmatches
+      · simp [popBottom, hmatches] at h
+
+theorem consumeBottom_sound (h : consumeBottom context required stack dead = some result) :
+    result.missing ++ stack = result.base ++ result.actual ∧
+      Types.ResultMatches context result.actual required ∧
+      (dead = false → result.missing = []) := by
+  simp only [consumeBottom, Option.map_eq_some_iff] at h
+  obtain ⟨popped, hp, equal⟩ := h
+  subst result
+  obtain ⟨split, typed, missing⟩ := popBottom_sound (context := context) hp
+  refine ⟨?_, ?_, ?_⟩
+  · simpa using congrArg List.reverse split
+  · simpa using validationResult_reverse typed
+  · intro reachable
+    simp [missing reachable]
+
+private theorem bottomNumber_sound (h : bottomNumber t = true) :
+    t = .bot ∨ t = .i32 ∨ t = .i64 ∨ t = .f32 ∨ t = .f64 ∨ t = .v128 := by
+  cases t <;> simp_all [bottomNumber]
+
+private def BottomEffect.Typed (eff : BottomEffect) (context : FunctionContext)
+    (labels : LabelContext) (i : Instr) : Prop := match eff with
+  | .normal input output => ValidationInstrTyping context labels i input output
+  | .jump input => ∀ base output,
+      ValidationInstrTyping context labels i (base ++ input) output
+
+theorem checkCatch_sound (h : checkCatch context labels c = true) :
+    CatchTyping context labels c := by
+  cases c with
+  | tag x d reference =>
+    cases ht : context.tags[x]? <;> simp [checkCatch, ht] at h
+    cases hl : labels[d]? <;> simp [hl] at h
+    exact .tag ht hl (Types.Algorithm.resultMatches_sound (by simpa [tailResultsMatch] using h))
+  | all d reference =>
+    cases hl : labels[d]? <;> simp [checkCatch, hl] at h
+    exact .all hl (Types.Algorithm.resultMatches_sound (by simpa [tailResultsMatch] using h))
+
+private theorem ordinaryBottomEffect_sound
+    (h : (do let (input, output) ← effect context i []
+             pure (BottomEffect.normal (input.map Types.embedVal)
+               (output.map Types.embedVal))) = .ok eff) : eff.Typed context labels i := by
+  cases he : effect context i [] <;>
+    simp [he, bind, Except.bind, pure, Except.pure] at h
+  cases h
+  exact .legacy (effect_sound he)
+
+private theorem bottomEffect_sound
+    (h : bottomEffect context labels i stack bodyCheck = .ok eff)
+    (hb : ∀ ls body input output, bodyCheck ls body input output = true →
+      ValidationSeqTyping context ls body input output) :
+    eff.Typed context labels i := by
+  cases i <;> simp only [bottomEffect, pure, Except.pure] at h
+  case brOnCast fail x source target =>
+    cases hl : labels[x]? <;> simp [hl] at h
+    rename_i ts
+    cases hr : ts.reverse <;> simp [hr] at h
+    rename_i label rest
+    split at h <;> (split at h <;> simp_all)
+    all_goals
+      cases h
+      have typed := ValidationInstrTyping.brOnCast (context := context) (source := source)
+        (target := target) (fail := fail) hl
+        (Types.Algorithm.valValid_sound (by simp_all))
+        (Types.Algorithm.valValid_sound (by simp_all))
+        (Types.Algorithm.valMatches_sound
+          (fuel := Types.Algorithm.budget ⟨context.definedTypes, []⟩ target.val source.val)
+          (by simp_all))
+        (Types.Algorithm.valMatches_sound
+          (fuel := Types.Algorithm.budget ⟨context.definedTypes, []⟩
+            (if fail then (source.difference target).val else target.val)
+            (Types.embedVal label)) (by simp_all))
+      simpa [BottomEffect.Typed, List.map_reverse, *] using typed
+  case gcReference op =>
+    cases h
+    exact .legacy .gcReference
+  case drop => cases h; exact .drop
+  case select types =>
+    cases types with
+    | none =>
+      change (if bottomNumber (bottomSelectType stack) then
+        Except.ok (BottomEffect.normal
+          [bottomSelectType stack, bottomSelectType stack, .i32] [bottomSelectType stack])
+        else Except.error (Error.invalid "select requires numeric operands or bottom")) =
+        .ok eff at h
+      split at h <;> simp_all
+      cases h
+      exact .select (bottomNumber_sound (by assumption))
+    | some types =>
+      exact ordinaryBottomEffect_sound h
+  case refIsNull =>
+    cases ht : stack.getLast?.getD Types.ValType.bot <;> simp [ht] at h
+    case bot =>
+      cases h
+      exact .legacy (.references .isNull)
+    case ref nullable heap =>
+      cases h
+      exact .legacy (.references .isNull)
+  case refAsNonNull =>
+    cases ht : stack.getLast?.getD Types.ValType.bot <;>
+      simp [ht, bind, Except.bind] at h
+    all_goals
+      cases h
+      exact .legacy .refAsNonNull
+  case brOnNull x =>
+    cases ht : stack.getLast?.getD Types.ValType.bot <;>
+      simp [ht, bind, Except.bind] at h
+    all_goals
+      cases hl : labels[x]? <;> simp [hl] at h
+      cases h
+      simpa only [BottomEffect.Typed, List.map_append, List.map_cons, List.map_nil,
+        Types.embedVal] using
+        (ValidationInstrTyping.legacy (RuntimeInstrTyping.brOnNull (context := context) hl))
+  case brOnNonNull x =>
+    cases hl : labels[x]? <;> simp [hl] at h
+    rename_i ts
+    cases hr : ts.reverse with
+    | nil => simp [hr] at h
+    | cons last prefixTypes =>
+      cases last <;> simp [hr] at h
+      case ref heap =>
+        cases h
+        have split := congrArg List.reverse hr
+        simp only [List.reverse_reverse, List.reverse_cons] at split
+        simpa only [BottomEffect.Typed, List.map_append, List.map_cons, List.map_nil,
+          ← List.map_reverse, Types.embedVal] using
+          (ValidationInstrTyping.legacy
+            (RuntimeInstrTyping.brOnNonNull (context := context) (nullable := true)
+              (by simpa only [split] using hl)))
+      case refNonNull heap =>
+        cases h
+        have split := congrArg List.reverse hr
+        simp only [List.reverse_reverse, List.reverse_cons] at split
+        simpa only [BottomEffect.Typed, List.map_append, List.map_cons, List.map_nil,
+          ← List.map_reverse, Types.embedVal] using
+          (ValidationInstrTyping.legacy
+            (RuntimeInstrTyping.brOnNonNull (context := context) (nullable := false)
+              (by simpa only [split] using hl)))
+  case callRef x =>
+    cases ht : context.types.func? (x) <;> simp [ht] at h
+    cases h
+    simpa only [BottomEffect.Typed, List.map_append, Types.embedVal] using
+      (ValidationInstrTyping.legacy (RuntimeInstrTyping.callRef ht))
+  case refFunc x =>
+    cases hf : context.funcs[x]? <;> simp [hf] at h
+    by_cases hd : x ∈ context.declaredRefs
+    · simp [hd] at h
+      cases ht : context.funcTypeIndices[x]? <;> simp [ht] at h
+      · cases h; exact .legacy (.nonNullFunc hf hd)
+      · cases h; exact .legacy (.typedFunc hf ht hd)
+    · simp [hd] at h
+  case callIndirect x y =>
+    cases ht : context.tables[x]? <;> simp [ht] at h
+    split at h <;> try simp_all
+    cases hf : context.types.func? (y) <;> simp [hf] at h
+    cases h
+    simpa only [BottomEffect.Typed, List.map_append, List.map_cons, List.map_nil] using
+      (ValidationInstrTyping.legacy
+        (RuntimeInstrTyping.indirectTyped (context := context) (labels := labels) ht
+          (Types.Algorithm.heapMatches_sound (by assumption)) hf))
+  case tableCopy x y =>
+    cases hd : context.tables[x]? <;> simp [hd] at h
+    cases hs : context.tables[y]? <;> simp [hs] at h
+    split at h <;> simp_all
+    cases h
+    exact .legacy (.tableCopy hd hs (Types.Algorithm.valMatches_sound (by assumption)))
+  case tableInit x y =>
+    cases ht : context.tables[x]? <;> simp [ht] at h
+    cases he : context.elems[y]? <;> simp [he] at h
+    split at h <;> simp_all
+    cases h
+    rename_i matched
+    cases hm : context.elemTypes[y]? with
+    | none =>
+      exact .legacy (.tableInit ht he
+        (Types.Algorithm.valMatches_sound (by simpa [hm] using matched)))
+    | some type =>
+      exact .legacy (.tableInitTyped ht hm
+        (Types.Algorithm.valMatches_sound (by simpa [hm] using matched)))
+  case unreachable => cases h; intro base output; exact .unreachable
+  case throw_ x =>
+    cases ht : context.tags[x]? <;> simp [ht] at h
+    cases h
+    intro base output
+    exact .throw_ ht
+  case throwRef =>
+    cases h
+    intro base output
+    exact .throwRef
+  case tryTable bt catches body =>
+    cases ht : bt.resolve context.types <;> simp [ht] at h
+    split at h <;> simp_all
+    cases h
+    rename_i valid
+    exact .tryTable ht (fun c member => checkCatch_sound (valid.1 c member))
+      (hb _ _ _ _ valid.2)
+  case returnCall x =>
+    cases hf : context.funcs[x]? <;> simp [hf] at h
+    cases hr : context.returns <;> simp [hr] at h
+    split at h <;> simp_all
+    cases h
+    intro base output
+    exact .returnCall hf hr (Types.Algorithm.resultMatches_sound (by
+      simpa [tailResultsMatch] using (by assumption :
+      tailResultsMatch context _ _ = true)))
+  case returnCallRef x =>
+    cases hf : context.types.func? (x) <;> simp [hf] at h
+    cases hr : context.returns <;> simp [hr] at h
+    split at h <;> simp_all
+    cases h
+    intro base output
+    exact .returnCallRef hf hr (Types.Algorithm.resultMatches_sound (by
+      simpa [tailResultsMatch] using (by assumption :
+      tailResultsMatch context _ _ = true)))
+  case returnCallIndirect x y =>
+    cases ht : context.tables[x]? <;> simp [ht] at h
+    split at h <;> try simp_all
+    cases hf : context.types.func? (y) <;> simp [hf] at h
+    cases hr : context.returns <;> simp [hr] at h
+    split at h <;> simp_all
+    cases h
+    intro base output
+    simpa only [List.map_append, List.map_cons, List.map_nil] using
+      (ValidationInstrTyping.returnCallIndirect (input := base) (output := output) ht
+        (Types.Algorithm.heapMatches_sound (by assumption)) hf hr
+        (Types.Algorithm.resultMatches_sound (by simpa [tailResultsMatch] using
+          (by assumption : tailResultsMatch context _ _ = true))))
+  case return_ =>
+    cases hr : context.returns <;> simp [hr] at h
+    cases h
+    intro base output
+    exact .return_ hr
+  case br x =>
+    cases hl : labels[x]? <;> simp [hl] at h
+    cases h
+    intro base output
+    exact .br hl
+  case brIf x =>
+    cases hl : labels[x]? <;> simp [hl] at h
+    cases h
+    rename_i ts
+    simpa only [BottomEffect.Typed, List.map_append] using
+      (ValidationInstrTyping.legacy
+        (RuntimeInstrTyping.plain (FunctionInstrTyping.plain (ControlInstrTyping.brIf hl))) :
+        ValidationInstrTyping context labels (.brIf x)
+          ((ts ++ [ValType.i32]).map Types.embedVal) (ts.map Types.embedVal))
+  case brTable targets fallback =>
+    cases hl : labels[fallback]? <;> simp [hl] at h
+    rename_i ts
+    split at h <;> simp_all
+    rename_i checked
+    cases h
+    intro base output
+    apply ValidationInstrTyping.brTableMatches
+    intro x member
+    have valid : branchTargetMatches context labels (branchArguments ts.length stack) x = true := by
+      rcases List.mem_cons.mp member with rfl | member
+      · exact checked.1
+      · exact checked.2 x member
+    cases hx : labels[x]? <;> simp [branchTargetMatches, hx] at valid
+    exact ⟨_, rfl, Types.Algorithm.resultMatches_sound valid⟩
+  case block bt body =>
+    cases ht : bt.resolve context.types <;> simp [ht] at h
+    split at h <;> simp_all
+    cases h
+    exact .block ht (hb _ _ _ _ (by assumption))
+  case loop bt body =>
+    cases ht : bt.resolve context.types <;> simp [ht] at h
+    split at h <;> simp_all
+    cases h
+    exact .loop ht (hb _ _ _ _ (by assumption))
+  case if_ bt yes no =>
+    cases ht : bt.resolve context.types <;> simp [ht] at h
+    split at h <;> simp_all
+    cases h
+    simpa only [BottomEffect.Typed, List.map_append] using
+      (ValidationInstrTyping.if_ ht (hb _ _ _ _ (by exact And.left (by assumption)))
+        (hb _ _ _ _ (by exact And.right (by assumption))))
+  all_goals exact ordinaryBottomEffect_sound h
+
+theorem checkBottomScoped_sound (h :
+    checkBottomScoped fuel context labels code stack dead output = true) :
+    ∃ padding, (dead = false → padding = []) ∧
+      ValidationSeqTyping context labels code (padding ++ stack) output := by
+  induction fuel generalizing context labels code stack dead output with
+  | zero => cases h
+  | succ fuel ih =>
+    cases code with
+    | nil =>
+      simp only [checkBottomScoped] at h
+      cases hc : consumeBottom ⟨context.definedTypes, []⟩ output stack dead <;> simp [hc] at h
+      rename_i popped
+      have base : popped.base = [] := h
+      obtain ⟨split, typed, missing⟩ := consumeBottom_sound hc
+      refine ⟨popped.missing, missing, ?_⟩
+      rw [split, base, List.nil_append]
+      exact .subtype .empty (validationResult_refl _ _) typed
+    | cons i rest =>
+      simp only [checkBottomScoped] at h
+      cases he : bottomEffect context labels i stack
+          (fun ls body input output => checkBottomScoped fuel context ls body input false output)
+          <;> simp [he] at h
+      rename_i eff
+      have typed := bottomEffect_sound he (fun ls body input output success => by
+        obtain ⟨padding, hp, derivation⟩ := ih success
+        simpa [hp rfl] using derivation)
+      cases eff with
+      | normal required produced =>
+        cases hc : consumeBottom ⟨context.definedTypes, []⟩ required stack dead <;> simp [hc] at h
+        rename_i popped
+        obtain ⟨padding, hp, tail⟩ := ih h
+        obtain ⟨split, hmatches, missing⟩ := consumeBottom_sound hc
+        refine ⟨padding ++ popped.missing, fun hd => by simp [hp hd, missing hd], ?_⟩
+        have step : ValidationInstrTyping context labels i
+            ((padding ++ popped.missing) ++ stack)
+            (padding ++ (popped.base ++ produced)) := by
+          have cast := ValidationInstrTyping.subtype typed hmatches
+            (validationResult_refl _ produced)
+          simpa only [List.append_assoc, split] using
+            (ValidationInstrTyping.weaken (base := padding ++ popped.base) cast)
+        exact .cons step tail
+      | jump required =>
+        cases hc : consumeBottom ⟨context.definedTypes, []⟩ required stack dead <;> simp [hc] at h
+        rename_i popped
+        obtain ⟨padding, _, tail⟩ := ih h
+        obtain ⟨split, hmatches, missing⟩ := consumeBottom_sound hc
+        refine ⟨popped.missing, missing, .cons ?_ (by simpa using tail)⟩
+        rw [split]
+        exact .subtype (typed popped.base padding)
+          (validationResult_append (validationResult_refl _ popped.base) hmatches)
+          (validationResult_refl _ padding)
+
+theorem checkBottomCode_sound (h : checkBottomCode context code input output
+    (labels := labels) = true) :
+    ValidationSeqTyping context labels code
+      (input.map Types.embedVal) (output.map Types.embedVal) := by
+  obtain ⟨padding, hp, derivation⟩ := checkBottomScoped_sound h
+  simpa [hp rfl] using derivation
+
 private theorem unit_ok (h : (result : Result Unit).isOk = true) : result = .ok () := by
   cases result with
   | error _ => cases h
   | ok value => cases value; rfl
+
+theorem checkSourceCode_sound (h : checkSourceCode context code input output labels = true) :
+    RuntimeSeqTyping context labels code input output := by
+  simp only [checkSourceCode, Bool.or_eq_true] at h
+  rcases h with legacy | bottom
+  · exact checkCode_sound (unit_ok legacy)
+  · exact .validation (checkBottomCode_sound bottom)
 
 theorem checkFunction_sound (h : checkFunction types context function = true) :
     ∃ ft, FuncTyping types context.funcs context.globals context.mems context.dataCount
       (tables := context.tables) (elems := context.elems)
       (declaredRefs := context.declaredRefs) function ft
       (definedTypes := context.definedTypes) (funcTypeIndices := context.funcTypeIndices)
-      (elemTypes := context.elemTypes) := by
+      (elemTypes := context.elemTypes) (tags := context.tags) := by
   unfold checkFunction at h
-  cases ht : types[function.typeIdx]? <;> simp [ht] at h
-  exact ⟨_, .wasm ht h.1 (checkCode_sound (unit_ok h.2))⟩
+  cases ht : types.func? (function.typeIdx) <;> simp [ht] at h
+  rcases h.2 with legacy | bottom
+  · exact ⟨_, .wasm ht h.1 (checkCode_sound (unit_ok legacy))⟩
+  · exact ⟨_, .wasmValidation ht h.1 (checkBottomCode_sound bottom)⟩
 
 private theorem defaultTableInit_sound (h : defaultTableInit kind code = true) :
     code = [.refNull kind] := by
@@ -424,6 +893,16 @@ theorem checkConstantInstruction_sound
   case const v =>
     cases v <;> simp at h
     all_goals exact .const
+  case arrayOp op =>
+    cases op <;> simp at h
+    · exact .arrayNew
+    · exact .arrayNewFixed
+  case structNew x default => exact .structNew
+  case gcReference op =>
+    cases op <;> simp at h
+    · exact .i31
+    · exact .anyConvertExtern
+    · exact .externConvertAny
   case binop type op => exact .binop (integerType_sound h)
   case refNull kind => exact .refNull
   case refFunc x => exact .refFunc
@@ -437,7 +916,7 @@ theorem checkConstantInstruction_sound
 
 theorem checkTable_sound (h : checkTable context table = true) : TableTyping context table := by
   simp only [checkTable, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true] at h
-  exact ⟨h.1.1, checkCode_sound (unit_ok h.1.2),
+  exact ⟨h.1.1, checkSourceCode_sound h.1.2,
     fun i member => checkConstantInstruction_sound (h.2 i member)⟩
 
 private theorem checkElemMode_sound (h : checkElemMode context type mode = true) :
@@ -449,12 +928,11 @@ private theorem checkElemMode_sound (h : checkElemMode context type mode = true)
     cases ht : context.tables[x]? <;> simp [checkElemMode, ht] at h
     refine .active ht ?_ (checkCode_sound (unit_ok h.1.2))
       (fun i member => checkConstantInstruction_sound (h.2 i member))
-    rw [h.1.1]
-    exact Types.embed_matches _ _
+    exact Types.Algorithm.valMatches_sound h.1.1
 
 theorem checkElem_sound (h : checkElem context elem = true) : ElemTyping context elem := by
   simp only [checkElem, Bool.and_eq_true, List.all_eq_true] at h
-  exact ⟨fun code member => checkCode_sound (unit_ok (h.1 code member).1),
+  exact ⟨fun code member => checkSourceCode_sound (h.1 code member).1,
     fun code member i hi => checkConstantInstruction_sound ((h.1 code member).2 i hi),
     checkElemMode_sound h.2⟩
 
@@ -464,7 +942,7 @@ theorem checkGlobals_sound (h : checkGlobals context globals = true) :
   | nil => exact .empty
   | cons global rest ih =>
     simp only [checkGlobals, Bool.and_eq_true, List.all_eq_true] at h
-    exact .cons (checkCode_sound (unit_ok h.1.1))
+    exact .cons (checkSourceCode_sound h.1.1)
       (fun i member => checkConstantInstruction_sound (h.1.2 i member)) (ih h.2)
 
 theorem checkData_sound (h : checkData context data = true) : DataTyping context data := by
@@ -493,6 +971,32 @@ private theorem checkImports_tables {module : Module}
   have hc := List.all_eq_true.mp h entry member
   cases hd : entry.desc <;> simp_all [checkImport]
 
+private theorem context_types {module : Module} {context : FunctionContext}
+    (h : module.context? = some context) :
+    Types.resolveSection? [] module.typeGroups = some context.definedTypes := by
+  unfold Module.context? at h
+  cases hr : Types.resolveSection? [] module.typeGroups <;> simp [hr] at h
+  cases hi : module.importedFuncIndices.mapM (fun x => module.types.func? (x)) <;> simp [hi] at h
+  cases hf : module.funcs.mapM (fun function => module.types.func? (function.typeIdx)) <;>
+    simp [hf] at h
+  cases ht : module.importedTagIndices.mapM
+      (tagSignature? module.types) <;> simp [ht] at h
+  cases hd : module.tags.mapM (tagSignature? module.types) <;> simp [hd] at h
+  cases h
+  rfl
+
+private theorem checkTypeGroups_sound (hc : module.context? = some context)
+    (h : checkTypeGroups module = true) (nonempty : module.typeGroups ≠ []) :
+    Types.TypeSectionValid [] module.typeGroups context.definedTypes ∧
+      module.typeGroups.flatten.map Types.SubType.body = module.types.map Types.embedComposite := by
+  have notEmpty : module.typeGroups.isEmpty = false := by simp [nonempty]
+  simp only [checkTypeGroups, notEmpty, Bool.false_eq_true, ↓reduceIte,
+    Bool.and_eq_true, decide_eq_true_eq] at h
+  obtain ⟨final, resolution, valid⟩ := Types.Algorithm.typeSection_sound h.1
+  have eq := (context_types hc).symm.trans resolution
+  cases Option.some.inj eq
+  exact ⟨valid, h.2⟩
+
 theorem validate_sound (h : validate module = .ok ()) : module.Valid := by
   unfold validate at h
   split at h <;> try simp_all
@@ -501,10 +1005,11 @@ theorem validate_sound (h : validate module = .ok ()) : module.Valid := by
   rename_i context
   have checks := h
   have shape := hs
-  simp only [supportedModule, Bool.and_eq_true, List.isEmpty_iff] at shape
+  simp only [supportedModule, Bool.and_eq_true] at shape
   rcases shape with
     ⟨⟨⟨⟨⟨⟨⟨⟨hi, hg⟩, hm⟩, hd⟩, ht⟩, he⟩, hgroups⟩, _⟩, _⟩
   simp only [moduleChecks, Bool.and_eq_true, List.all_eq_true, decide_eq_true_eq] at checks
+  rcases checks with ⟨checks, htypes⟩
   rcases checks with ⟨⟨checks, hmems⟩, hdatas⟩
   rcases checks with ⟨checks, hglobals⟩
   rcases checks with
@@ -522,6 +1027,6 @@ theorem validate_sound (h : validate module = .ok ()) : module.Valid := by
     exact checkTable_sound (htables table member)
   · intro elem member
     exact checkElem_sound (helems elem member)
-  · simp [hgroups]
+  · exact checkTypeGroups_sound hc htypes
 
 end Wasm.Validation

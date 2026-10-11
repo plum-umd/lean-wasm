@@ -17,9 +17,15 @@ def TableType.close? (types : List Types.DefinedType) (type : TableType) : Optio
 
 def ImportDesc.close? (types : List Types.DefinedType) : ImportDesc → Option ImportDesc
   | .func x => some (.func x)
+  | .tag x => some (.tag x)
   | .global type => (type.close? types).map .global
   | .table type => (type.close? types).map .table
   | .memory type => some (.memory type)
+
+def CompositeType.close? (types : List Types.DefinedType) : CompositeType → Option CompositeType
+  | .func type => (type.close? types).map .func
+  | .struct_ fields => (fields.mapM (Types.FieldType.close? types)).map .struct_
+  | .array field => (field.close? types).map .array
 
 def Module.resolvedTypes? (module : Module) : Option (List Types.DefinedType) :=
   Types.resolveSection? [] module.typeGroups
@@ -28,7 +34,7 @@ def Module.resolvedTypes? (module : Module) : Option (List Types.DefinedType) :=
 are resolved through the instance's type map at execution. -/
 def Module.close? (module : Module) : Option Module := do
   let types ← module.resolvedTypes?
-  let signatures ← module.types.mapM (FuncType.close? types)
+  let signatures ← module.types.mapM (CompositeType.close? types)
   let imports ← module.imports.mapM fun entry => do
     return { entry with desc := ← entry.desc.close? types }
   let funcs ← module.funcs.mapM fun function => do

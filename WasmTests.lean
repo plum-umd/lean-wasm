@@ -1,3 +1,7 @@
+import Wasm.VectorTests
+import Wasm.GCReferenceTests
+import Wasm.TypeAlgorithmTests
+import Wasm.BinaryTests
 import Wasm.SpectestTests
 import Wasm.FloatTests
 import Wasm.ExecutableValidationTests

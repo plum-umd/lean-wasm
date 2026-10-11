@@ -17,6 +17,8 @@ inductive LocalStep : Frame → List AdminInstr → Frame → List AdminInstr �
       LocalStep state (values vs ++ es ++ tail) state' (values vs ++ es' ++ tail)
   | label : LocalStep state body state' body' →
       LocalStep state [.label n continuation body] state' [.label n continuation body']
+  | handler : LocalStep state body state' body' →
+      LocalStep state [.handler catches body] state' [.handler catches body']
   | frame : LocalStep inner body inner' body' →
       LocalStep state [.frame n inner body] state [.frame n inner' body']
 
@@ -53,6 +55,11 @@ def checkedLocalStep (state : Frame) (es : List AdminInstr) : CheckedLocalStep s
       (checkedLocalStep state body).map fun next =>
       ⟨(next.val.1, [.label n continuation next.val.2]), LocalStep.label next.property⟩
     simpa [values] using localContext [] tail inner
+  | .handler catches body :: tail =>
+    let inner : CheckedLocalStep state [.handler catches body] :=
+      (checkedLocalStep state body).map fun next =>
+      ⟨(next.val.1, [.handler catches next.val.2]), LocalStep.handler next.property⟩
+    simpa [values] using localContext [] tail inner
   | .frame n frame body :: tail =>
     let inner : CheckedLocalStep state [.frame n frame body] :=
       (checkedLocalStep frame body).map fun next =>
@@ -76,13 +83,13 @@ theorem LocalStep.module_preserved (h : LocalStep state es state' es') :
     state'.module = state.module := by
   induction h with
   | get | set | tee | frame => rfl
-  | context _ ih | label _ ih => exact ih
+  | context _ ih | label _ ih | handler _ ih => exact ih
 
 theorem LocalStep.length_preserved (h : LocalStep state es state' es') :
     state'.locals.length = state.locals.length := by
   induction h with
   | get | tee | frame => rfl
   | set => simp
-  | context _ ih | label _ ih => exact ih
+  | context _ ih | label _ ih | handler _ ih => exact ih
 
 end Wasm
