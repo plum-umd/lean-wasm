@@ -89,6 +89,12 @@ reduction relation (`stepConfiguration_sound`, `runConfiguration_sound`). Instan
 soundness proofs, and instruction families establish additional typing and resource invariants.
 Integer/bitwise SIMD and vector memory execution are included in certified stepping.
 
+Progress, preservation, and multi-step safety are proved for an integer core with structured
+control, locals, direct calls, and return against the existing configuration reduction relation.
+Validator/function-body typing embeds in bottom-aware administrative typing, with progress,
+preservation, multi-step safety, and exact terminal result types proved for that invariant. See
+[TYPE-SAFETY.md](TYPE-SAFETY.md) for the precise invariants and scope.
+
 The `.wast` runner uses a separate native backend for floating-point arithmetic and `spectest`
 host calls. Their execution correctness is unproved; scalar and vector floating instruction
 validation is included in the validator soundness proof. Relaxed SIMD selects one allowed
@@ -96,8 +102,8 @@ result profile rather than enumerating every permitted result.
 
 The implementation manually transcribes the upstream rules. Correspondence to an imported
 specification, parser/decoder correctness, validator rejection correctness/completeness,
-absence-of-step completeness, preservation/progress, and IEEE/native execution proofs remain
-future work. There are no `sorry` proofs or custom correctness axioms; Lean tests print proof
+absence-of-step completeness, full-language preservation/progress, and IEEE/native execution
+proofs remain future work. There are no `sorry` proofs or custom correctness axioms; Lean tests print proof
 axiom dependencies.
 
 ## Code organization

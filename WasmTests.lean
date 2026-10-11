@@ -21,6 +21,7 @@ import Wasm
 import Wasm.ControlTests
 import Wasm.StepperTests
 import Wasm.IntegerTests
+import Wasm.TypeSafetyTests
 
 namespace Wasm.Tests
 

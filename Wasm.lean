@@ -10,6 +10,11 @@ import Wasm.Integers
 import Wasm.IntegerReduction
 import Wasm.Validation
 import Wasm.Reduction
+import Wasm.TypeSafety.CoreSource
+import Wasm.TypeSafety.NativeValidation
+import Wasm.TypeSafety.NativeMatching
+import Wasm.TypeSafety.NativeProgress
+import Wasm.TypeSafety.NativeSafety
 import Wasm.Control
 import Wasm.ControlValidation
 import Wasm.ControlChoice
