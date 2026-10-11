@@ -23,6 +23,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install test harness dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ripgrep
+
       - name: Build library, proofs, and Lean regressions
         uses: leanprover/lean-action@v1
         with:
