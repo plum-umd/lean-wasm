@@ -89,7 +89,8 @@ def checkedChange (m : Machine) : CheckedChange m :=
 def step (m : Machine) : Option Machine :=
   (checkedChange (normalize m)).map fun change => change.val.commit
 
-theorem step_spec (h : step m = some next) : Wasm.ConfigStep m.toSpec next.toSpec := by
+theorem step_sound (h : step m = some next) :
+    ConfigStep m.toConfiguration next.toConfiguration := by
   unfold step at h
   cases hs : checkedChange (normalize m) with
   | none => simp [hs] at h
@@ -98,26 +99,80 @@ theorem step_spec (h : step m = some next) : Wasm.ConfigStep m.toSpec next.toSpe
     subst next
     have sound : ConfigStep m.toConfiguration change.val.commit.toConfiguration := by
       simpa [normalize_same] using change.property
-    exact sound.toSpec
+    exact sound
 
-private def checkedRun : (fuel : Nat) → (m : Machine) →
-    {next : Machine // ConfigSteps m.toConfiguration next.toConfiguration}
-  | 0, m => ⟨m, .refl⟩
-  | fuel + 1, m =>
+theorem step_spec (h : step m = some next) : Wasm.ConfigStep m.toSpec next.toSpec :=
+  (step_sound h).toSpec
+
+-- Native instructions and resource policy extend this same machine loop.
+structure PlannedStep where
+  change : Change
+  output : List Value := []
+
+structure ExecutionHooks where
+  fallback : Machine → Option PlannedStep := fun _ => none
+  exceedsLimit : Machine → Bool := fun _ => false
+
+@[specialize] def planWith (hooks : ExecutionHooks) (m : Machine) : Option PlannedStep :=
+  match checkedChange m with
+  | some change => some ⟨change.val, []⟩
+  | none => hooks.fallback m
+
+structure ExecutionResult where
+  state : Machine
+  output : List Value
+  limitExceeded : Bool
+
+-- Plan first, release the input, then commit; preserve array ownership on allocation.
+@[specialize] def execute (hooks : ExecutionHooks) :
+    Nat → Machine → List Value → ExecutionResult
+  | 0, m, output => ⟨m, output, false⟩
+  | fuel + 1, m, output =>
     let focused := normalize m
-    match checkedChange focused with
-    | none => ⟨focused, by rw [normalize_same]; exact .refl⟩
+    if hooks.exceedsLimit focused then ⟨focused, output, true⟩
+    else match checkedChange focused with
+      | some change => execute hooks fuel change.val.commit output
+      | none => match hooks.fallback focused with
+        | none => ⟨focused, output, false⟩
+        | some plan =>
+          let output := if plan.output.isEmpty then output else output ++ plan.output
+          execute hooks fuel plan.change.commit output
+
+-- The common path avoids packaging a certified step as an extension result. This
+-- equation proves the optimization has the same recurrence for every hook policy.
+theorem execute_succ (hooks : ExecutionHooks) (fuel : Nat) (m : Machine)
+    (output : List Value) :
+    execute hooks (fuel + 1) m output =
+      let focused := normalize m
+      if hooks.exceedsLimit focused then ⟨focused, output, true⟩
+      else match planWith hooks focused with
+        | none => ⟨focused, output, false⟩
+        | some plan =>
+          let output := if plan.output.isEmpty then output else output ++ plan.output
+          execute hooks fuel plan.change.commit output := by
+  cases hc : checkedChange (normalize m) <;> simp [execute, planWith, hc]
+
+private theorem execute_sound (fuel : Nat) (m : Machine) (output : List Value) :
+    ConfigSteps m.toConfiguration (execute {} fuel m output).state.toConfiguration := by
+  induction fuel generalizing m output with
+  | zero => exact .refl
+  | succ fuel ih =>
+    cases hc : checkedChange (normalize m) with
+    | none =>
+      simpa [execute, hc, normalize_same] using
+        (ConfigSteps.refl (config := m.toConfiguration))
     | some change =>
-      let result := checkedRun fuel change.val.commit
-      ⟨result.val, .cons (by simpa [focused, normalize_same] using change.property)
-        result.property⟩
+      have first : ConfigStep m.toConfiguration change.val.commit.toConfiguration := by
+        simpa [normalize_same] using change.property
+      simpa [execute, hc] using
+        (ConfigSteps.cons first (ih change.val.commit output))
 
 structure RunResult where
   state : Machine
   status : RunStatus
   deriving BEq, Repr
 
-private def terminalStatus (m : Machine) : RunStatus :=
+def terminalStatus (m : Machine) : RunStatus :=
   if !m.contexts.isEmpty then .stuck
   else match m.code with
     | [] => .finished m.operands.reverse
@@ -150,13 +205,13 @@ private theorem terminalStatus_spec (m : Machine) : StatusSpec (terminalStatus m
 
 -- A probe plans a step but never commits a heap mutation.
 def run (fuel : Nat) (m : Machine) : RunResult :=
-  let final := (checkedRun fuel m).val
+  let final := (execute {} fuel m []).state
   let focused := normalize final
   let status := if (checkedChange focused).isSome then .exhausted else terminalStatus focused
   ⟨final, status⟩
 
 theorem run_sound : ConfigSteps m.toConfiguration (run fuel m).state.toConfiguration :=
-  (checkedRun fuel m).property
+  execute_sound fuel m []
 
 theorem run_spec :
     Wasm.ConfigSteps m.toSpec (run fuel m).state.toSpec := run_sound.toSpec
@@ -166,13 +221,13 @@ theorem run_status_spec : StatusSpec (run fuel m).status (run fuel m).state.toSp
   simp only
   split
   · rename_i h
-    cases hp : checkedChange (normalize (checkedRun fuel m).val) with
+    cases hp : checkedChange (normalize (execute {} fuel m []).state) with
     | none => simp [hp] at h
     | some change =>
       refine ⟨change.val.commit.toSpec, ?_⟩
       have sound := change.property.toSpec
       simpa [toSpec, normalize_same] using sound
-  · have sound := terminalStatus_spec (normalize (checkedRun fuel m).val)
+  · have sound := terminalStatus_spec (normalize (execute {} fuel m []).state)
     simpa [toSpec, normalize_same] using sound
 
 end Wasm.Fast.Machine

@@ -1,111 +1,59 @@
-import Wasm.Fast.Workloads
+import Wasm.NativeExecution
+import Wasm.Fast.DepthWorkloads
 
 open Wasm
-open Wasm.Fast.Workloads
 
-@[noinline] private def allocateSpec (n : Nat) : Wasm.Store := Id.run do
-  let mut store : Wasm.Store := {}
-  for i in [:n] do
-    store := (store.allocateStruct (object i)).2
-  return store
-
-@[noinline] private def allocateFast (n : Nat) : Wasm.Fast.Store := Id.run do
-  let mut store : Wasm.Fast.Store := {}
-  for i in [:n] do
-    store := (store.allocateStruct (object i)).2
-  return store
-
-@[noinline] private def lookupSpec (store : Wasm.Store) (address count : Nat) : Nat := Id.run do
-  let mut sum := 0
-  for _ in [:count] do
-    if let some object := store.struct? ⟨address⟩ then sum := sum + object.fields.length
-  return sum
-
-@[noinline] private def lookupFast (store : Wasm.Fast.Store)
-    (address count : Nat) : Nat := Id.run do
-  let mut sum := 0
-  for _ in [:count] do
-    if let some object := store.struct? ⟨address⟩ then sum := sum + object.fields.length
-  return sum
-
--- IO sequencing prevents Lean's pure-let scheduling from moving work across timer reads.
 @[noinline] private def evaluate {α : Type} (action : Unit → α) : IO α :=
   pure (action ())
 
-private def verify (kind : String) (n : Nat) (state : Wasm.Configuration)
-    (status : RunStatus) : IO Unit := do
-  unless status == .finished (expected kind n) do
-    throw (IO.userError s!"{kind}/{n}: unexpected status {repr status}")
-  let expectedHeap := if kind == "control" then 0 else n
-  unless state.store.structs.length == expectedHeap do
-    throw (IO.userError s!"{kind}/{n}: wrong heap size")
-
--- Each process has fresh inputs. Setup, conversion and verification have separate timings.
-private def sample (backend kind : String) (n : Nat) : IO Unit := do
-  if kind == "heap-allocate" then
-    let start ← IO.monoNanosNow
-    let checksum ← if backend == "fast" then do
-      let store ← evaluate fun _ => allocateFast n
-      let stop ← IO.monoNanosNow
-      IO.println s!"{backend},{kind},{n},0,{stop - start},0,0,{store.structs.size}"
-      pure store.structs.size
-    else do
-      let store ← evaluate fun _ => allocateSpec n
-      let stop ← IO.monoNanosNow
-      IO.println s!"{backend},{kind},{n},0,{stop - start},0,0,{store.structs.length}"
-      pure store.structs.length
-    unless checksum == n do throw (IO.userError "allocation checksum mismatch")
-    return
-  if kind.startsWith "heap-read-" then
-    let store ← evaluate fun _ => ({structs := (List.range n).map object} : Wasm.Store)
-    let address := if kind == "heap-read-early" then 0
-      else if kind == "heap-read-middle" then n / 2 else n - 1
-    if backend == "fast" then
-      let fast ← evaluate fun _ => Wasm.Fast.Store.ofSpec store
-      let start ← IO.monoNanosNow
-      let checksum ← evaluate fun _ => lookupFast fast address n
-      let stop ← IO.monoNanosNow
-      unless checksum == n do throw (IO.userError "lookup checksum mismatch")
-      IO.println s!"{backend},{kind},{n},0,{stop - start},0,0,{n}"
-    else
-      let start ← IO.monoNanosNow
-      let checksum ← evaluate fun _ => lookupSpec store address n
-      let stop ← IO.monoNanosNow
-      unless checksum == n do throw (IO.userError "lookup checksum mismatch")
-      IO.println s!"{backend},{kind},{n},0,{stop - start},0,0,{n}"
-    return
-  let input ← evaluate fun _ => configuration kind n
-  let limit := fuel kind n
+private def sample (backend kind : String) (iterations depth : Nat) : IO Unit := do
+  let nested := Wasm.Fast.DepthWorkloads.kinds.contains kind
+  let input ← evaluate fun _ => if nested then
+    Wasm.Fast.DepthWorkloads.configuration kind iterations depth
+    else Wasm.Fast.Workloads.configuration kind iterations
+  let fuel := if nested then Wasm.Fast.DepthWorkloads.fuel iterations depth
+    else Wasm.Fast.Workloads.fuel kind iterations
+  let expected := if nested then Wasm.Fast.DepthWorkloads.expected kind iterations
+    else RunStatus.finished (Wasm.Fast.Workloads.expected kind iterations)
   let begin ← IO.monoNanosNow
-  if backend == "fast" then
-    let fast ← evaluate fun _ => Wasm.Fast.Configuration.ofSpec input
-    let ready ← IO.monoNanosNow
-    let result ← evaluate fun _ => Wasm.Fast.runConfiguration limit fast
-    let done ← IO.monoNanosNow
-    let decoded ← evaluate fun _ => result.state.toSpec
-    let converted ← IO.monoNanosNow
-    verify kind n decoded result.status
-    IO.println (s!"{backend},{kind},{n},{limit},{done - ready},{ready - begin}," ++
-      s!"{converted - done},{decoded.store.structs.length}")
-  else
-    let result ← evaluate fun _ => Wasm.runConfiguration limit input
-    let done ← IO.monoNanosNow
-    verify kind n result.state result.status
-    IO.println (s!"{backend},{kind},{n},{limit},{done - begin},0,0," ++
-      s!"{result.state.store.structs.length}")
+  let machine ← evaluate fun _ =>
+    Wasm.Fast.Machine.ofConfiguration (Wasm.Fast.Configuration.ofSpec input)
+  let ready ← IO.monoNanosNow
+  let (final, status) ← evaluate fun _ => if backend == "native" then
+    let result := Wasm.Native.runMachine fuel machine
+    (result.state, result.status)
+    else
+      let result := Wasm.Fast.Machine.run fuel machine
+      (result.state, result.status)
+  let stop ← IO.monoNanosNow
+  let state ← evaluate fun _ => final.toSpec
+  let decoded ← IO.monoNanosNow
+  let execution := stop - ready
+  let inbound := ready - begin
+  let outbound := decoded - stop
+  unless status == expected do
+    throw (IO.userError s!"{backend}/{kind}/{iterations}/{depth}: unexpected {repr status}")
+  let heapSize := if nested || kind == "control" then 0 else iterations
+  unless state.store.structs.length == heapSize do throw (IO.userError "wrong heap size")
+  let exceptions := if kind == "unwind" then 1 else 0
+  unless state.store.exns.length == exceptions do throw (IO.userError "wrong exception count")
+  IO.println (s!"{backend},{kind},{iterations},{depth},{fuel},{execution}," ++
+    s!"{inbound},{outbound},{heapSize}")
 
 def main (args : List String) : IO UInt32 := do
   match args with
-  | [backend, kind, size] =>
-    unless backend == "spec" || backend == "fast" do
-      throw (IO.userError "backend must be spec or fast")
-    let some n := size.toNat? | throw (IO.userError "size must be a natural number")
-    unless n > 0 && n ≤ 1000000 do throw (IO.userError "size must be in 1..1000000")
-    unless ["heap-allocate", "heap-read-early", "heap-read-middle", "heap-read-late",
-      "allocate", "allocate-read", "linked", "read-early", "read-middle", "read-late",
-      "control"].contains kind do throw (IO.userError "unknown workload")
-    sample backend kind n
+  | [backend, kind, count, nesting] =>
+    unless ["certified", "native"].contains backend do
+      throw (IO.userError "mode must be certified or native")
+    unless (Wasm.Fast.DepthWorkloads.kinds ++ ["allocate", "allocate-read", "linked",
+      "read-early", "read-middle", "read-late", "control"]).contains kind do
+      throw (IO.userError "unknown workload")
+    let some iterations := count.toNat? | throw (IO.userError "invalid iteration count")
+    let some depth := nesting.toNat? | throw (IO.userError "invalid depth")
+    unless iterations > 0 && iterations ≤ 1000000 && depth ≤ 512 do
+      throw (IO.userError "iterations must be in 1..1000000 and depth in 0..512")
+    sample backend kind iterations depth
     return 0
   | _ =>
-    IO.eprintln "usage: lake exe wasm-bench spec|fast WORKLOAD SIZE"
+    IO.eprintln "usage: lake exe wasm-bench certified|native WORKLOAD ITERATIONS DEPTH"
     return 1

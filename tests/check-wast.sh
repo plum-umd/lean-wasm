@@ -47,6 +47,8 @@ completed_files=$(awk '!/^#/ && $3 == "complete" {print $1}' tests/testsuite/inv
   exit 1
 }
 lake build wast
+machine=$(.lake/build/bin/wast tests/machine-integration.wast)
+printf '%s\n' "$machine" | rg -q '^tests/machine-integration.wast: 9 passed, 0 failed, 0 unsupported$'
 vectors=$(.lake/build/bin/wast tests/vectors.wast)
 printf '%s\n' "$vectors" | rg -q '^tests/vectors.wast: 8 passed, 0 failed, 0 unsupported$'
 cast_branches=$(.lake/build/bin/wast tests/gc-cast-branches.wast)

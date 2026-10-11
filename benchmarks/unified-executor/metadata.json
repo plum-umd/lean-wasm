@@ -1,0 +1,279 @@
+{
+  "timestamp_utc": "2026-10-11T21:35:23.086995+00:00",
+  "revision": "349e4c84231a0be0c33dd511ad2a580f59077d22",
+  "working_tree": "M BenchMain.lean\n M README.md\n D StackBenchMain.lean\n M Wasm/Configuration.lean\n M Wasm/Fast.lean\n M Wasm/Fast/Configuration.lean\n M Wasm/Fast/Correspondence.lean\n M Wasm/Fast/MachineExecution.lean\n M Wasm/Fast/Store.lean\n M Wasm/Fast/Tests.lean\n M Wasm/NativeExecution.lean\n M Wasm/SpectestTests.lean\n M benchmarks/array-heap/README.md\n M benchmarks/explicit-stack/README.md\n M lakefile.toml\n M tests/benchmark-fast.py\n D tests/benchmark-stack.py\n M tests/check-wast.sh\n?? Wasm/ConfigurationSemantics.lean\n?? Wasm/Fast/Executor.lean\n?? benchmarks/unified-executor/\n?? tests/__pycache__/\n?? tests/machine-integration.wast",
+  "toolchain": "Lean (version 4.27.0, arm64-apple-darwin24.6.0, commit db93fe1608548721853390a10cd40580fe7d22ae, Release)",
+  "hardware": "Apple M1",
+  "platform": "macOS-15.7.3-arm64-i386-64bit-Mach-O",
+  "repeat": 7,
+  "cases": [
+    [
+      "allocate",
+      1000,
+      0
+    ],
+    [
+      "allocate",
+      4000,
+      0
+    ],
+    [
+      "allocate",
+      16000,
+      0
+    ],
+    [
+      "allocate-read",
+      1000,
+      0
+    ],
+    [
+      "allocate-read",
+      4000,
+      0
+    ],
+    [
+      "allocate-read",
+      16000,
+      0
+    ],
+    [
+      "linked",
+      1000,
+      0
+    ],
+    [
+      "linked",
+      4000,
+      0
+    ],
+    [
+      "linked",
+      16000,
+      0
+    ],
+    [
+      "read-early",
+      1000,
+      0
+    ],
+    [
+      "read-early",
+      4000,
+      0
+    ],
+    [
+      "read-early",
+      16000,
+      0
+    ],
+    [
+      "read-middle",
+      1000,
+      0
+    ],
+    [
+      "read-middle",
+      4000,
+      0
+    ],
+    [
+      "read-middle",
+      16000,
+      0
+    ],
+    [
+      "read-late",
+      1000,
+      0
+    ],
+    [
+      "read-late",
+      4000,
+      0
+    ],
+    [
+      "read-late",
+      16000,
+      0
+    ],
+    [
+      "control",
+      1000,
+      0
+    ],
+    [
+      "control",
+      4000,
+      0
+    ],
+    [
+      "control",
+      16000,
+      0
+    ],
+    [
+      "blocks",
+      1000,
+      0
+    ],
+    [
+      "blocks",
+      1000,
+      4
+    ],
+    [
+      "blocks",
+      1000,
+      16
+    ],
+    [
+      "blocks",
+      1000,
+      64
+    ],
+    [
+      "blocks",
+      1000,
+      256
+    ],
+    [
+      "calls",
+      1000,
+      0
+    ],
+    [
+      "calls",
+      1000,
+      4
+    ],
+    [
+      "calls",
+      1000,
+      16
+    ],
+    [
+      "calls",
+      1000,
+      64
+    ],
+    [
+      "calls",
+      1000,
+      256
+    ],
+    [
+      "tail-calls",
+      1000,
+      0
+    ],
+    [
+      "tail-calls",
+      1000,
+      4
+    ],
+    [
+      "tail-calls",
+      1000,
+      16
+    ],
+    [
+      "tail-calls",
+      1000,
+      64
+    ],
+    [
+      "tail-calls",
+      1000,
+      256
+    ],
+    [
+      "handlers",
+      1000,
+      0
+    ],
+    [
+      "handlers",
+      1000,
+      4
+    ],
+    [
+      "handlers",
+      1000,
+      16
+    ],
+    [
+      "handlers",
+      1000,
+      64
+    ],
+    [
+      "handlers",
+      1000,
+      256
+    ],
+    [
+      "unwind",
+      1000,
+      0
+    ],
+    [
+      "unwind",
+      1000,
+      4
+    ],
+    [
+      "unwind",
+      1000,
+      16
+    ],
+    [
+      "unwind",
+      1000,
+      64
+    ],
+    [
+      "unwind",
+      1000,
+      256
+    ]
+  ],
+  "policies": [
+    "certified",
+    "native"
+  ],
+  "warmups_per_policy_case": 1,
+  "fresh_process_per_sample": true,
+  "source_sha256": {
+    "BenchMain.lean": "7b5164f7fb0502c4ee6d71502de45ebf0e4e2772f773c7d5d7f902249e0634ec",
+    "lakefile.toml": "45bcd2735248b19866d3163c6e28b0d8a0a52a35d1612c082701562ffb1f1d5f",
+    "tests/benchmark-fast.py": "71c0e98538a53575567a5c2bda880ebd9b931c4c2658a9fdb65efb034ee91b9b",
+    "Wasm/Configuration.lean": "6370e6bfa4284482162516272540eeaed59500970321b3dd7f2ecb7e665b8dd5",
+    "Wasm/ConfigurationSemantics.lean": "09fc4481ea524bfda274b4e3e3bb3f201a29a9f0f03bc797f1322ca73faa7c67",
+    "Wasm/NativeExecution.lean": "ac301be509d99acb7af57c0d45703b09cdaf8030f74e40ffd7df99bf9ec91748",
+    "Wasm/Fast/Arrays.lean": "64beeef901bff3e94d3437cf4b056cf502185c5252d3249b05ceb24e148f5701",
+    "Wasm/Fast/BulkMemory.lean": "9d2fb42d35283c4de45a6627473dfcb7d2016796897803db89fefab13f022734",
+    "Wasm/Fast/BulkMemoryStepper.lean": "00d201520383c058863f48da3c8631331367c1818e7f6cd8bff230cfe4dd90fc",
+    "Wasm/Fast/Calls.lean": "58dd452169434d3af0af2b467ca33fc6716d58cb229b0ec6c0f4330bb9273f5b",
+    "Wasm/Fast/Configuration.lean": "82ba6281f5427785b849d8866d175e2b16bced980909e5a268f841937000b42d",
+    "Wasm/Fast/Correspondence.lean": "d7f924086a80e08098452111778cde40a0f8cb0f72679635a88c4b5964d24b48",
+    "Wasm/Fast/DepthWorkloads.lean": "db036d7474778a31c638351543d8fe4d4b7f2684603a1308a1eb394ae30944b0",
+    "Wasm/Fast/Exceptions.lean": "8bf7f05512fc6509f38efd4edcc28ae269d05f6ca79b07d7a8471f1b625f2d07",
+    "Wasm/Fast/Executor.lean": "8ff804c395e11cd7560939bf3e7fcab59a20842f5b1373328e393641eebe017b",
+    "Wasm/Fast/Globals.lean": "138f779877168b284a11c123fc6a434df8c2d5c679ac70c3cc1adf9d3ea95c80",
+    "Wasm/Fast/Machine.lean": "d418ffdde8b329e9eed8f913ec6f0ba9214aa87a9051da2a05c1d85ed0e2625c",
+    "Wasm/Fast/MachineDispatch.lean": "526371946555848be0969868fa80ef3b029ca290783564192435d9a3ffd15738",
+    "Wasm/Fast/MachineExecution.lean": "53fb0694efaa48425577693040e0c84cadd5085c47bbaf5cc77aa8237463fedf",
+    "Wasm/Fast/Memory.lean": "c807c5dd9feaa2c0039442b1b434d02763cca2d25d2f5b9294968a4f9340c357",
+    "Wasm/Fast/MemoryStepper.lean": "7ec67623204e498175634b037ecab0e7a3784f2ae645e5ca33dbc2f251ec9209",
+    "Wasm/Fast/References.lean": "b183b6890047748c095220c501d71932b9d50ac3856561bf10597a0a3aee54bc",
+    "Wasm/Fast/Runtime.lean": "93dadf130cdd7b1dc2e36da37e987608d7a82cc86aa5a586c0113fa2484a58ef",
+    "Wasm/Fast/Store.lean": "1935961cceaaef72294f7bfaa9c1d3de981783223319ccb8e8e232a6737d84f7",
+    "Wasm/Fast/Structures.lean": "4a2dc0d7a0f73febe58dd232addab7e761332e7152622ade43deee8675b0c70b",
+    "Wasm/Fast/TableStepper.lean": "1e54046dbf9b10b3277952d22dfa543e2b0902df415b32e1bff8cf35ffd0c0a3",
+    "Wasm/Fast/Tables.lean": "12c6f8671d85cb324daff05f3fd66ed88e914b154100717c37ab5e260344602c",
+    "Wasm/Fast/Tests.lean": "892c2cc033cb2ba46bbf9ce61952f29d070fbc197ab63315388198965a5434d9",
+    "Wasm/Fast/VectorStepper.lean": "d7b23cc5bb8c74bf0f45b75fe5178753864a2c1791f3dc1f3cfb2427c456267a",
+    "Wasm/Fast/Workloads.lean": "ce3ceff88e9d4f1761e3518f2c3ee488b3161dda29a161e02d2e9a055ed58bd6"
+  }
+}

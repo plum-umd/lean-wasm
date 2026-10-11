@@ -54,138 +54,101 @@ Call-stack exhaustion can satisfy `assert_exhaustion`; running out of fuel is a 
 Allocation budgets are embedder resource policy, separate from static validation.
 Exit codes are **0** for complete success, **1** for failures, and **2** for unsupported coverage.
 
-## Array-backed certified executor
+## Execution machine
 
-`import Wasm.Fast` exposes a separate executor with `Array StructInst` storage. The
-specification store and reduction rules remain the correctness specification. All instruction
-families supported by the original certified `runConfiguration` have fast counterparts,
-including mutable structs; other store components retain their existing representations.
+The certified APIs and the `wast` CLI use one explicit execution machine with an
+`Array StructInst` heap. The specification store and reduction rules remain unchanged.
+The original list-heap configuration runner and the intermediate heap-only runner have
+been removed. Instruction evaluators and the declarative reduction relations remain the
+correctness specification and certified building blocks.
+
+Existing callers can keep using the specification-configuration boundary:
+
+```lean
+import Wasm.Configuration
+
+def execute (fuel : Nat) (input : Wasm.Configuration) : Wasm.Configuration :=
+  (Wasm.runConfiguration fuel input).state
+```
+
+That API converts the store once at entry, runs the machine, and reconstructs the result
+once at exit. `Wasm.stepConfiguration` similarly wraps a single machine step. Repeatedly
+calling the specification single-step API converts at each call; retain a machine for
+sustained execution or resumption:
 
 ```lean
 import Wasm.Fast
 
-def executeFast (fuel : Nat) (input : Wasm.Configuration) : Wasm.Configuration :=
-  let result := Wasm.Fast.runConfiguration fuel (Wasm.Fast.Configuration.ofSpec input)
-  result.state.toSpec
+def start (input : Wasm.Configuration) : Wasm.Fast.Machine :=
+  Wasm.Fast.Machine.ofConfiguration (Wasm.Fast.Configuration.ofSpec input)
+
+def resume (fuel : Nat) (machine : Wasm.Fast.Machine) : Wasm.Fast.Machine.RunResult :=
+  Wasm.Fast.Machine.run fuel machine
 ```
 
-Convert once at entry and once at exit. When resuming after fuel exhaustion, retain the
-`Wasm.Fast.Configuration` and pass it directly to the next run. Conversion traverses the
-struct heap and should not be performed between instructions.
+`Wasm.Fast.runConfiguration` is also a compatibility boundary around the same machine,
+retaining the array heap in its returned configuration. `Wasm.Fast.Machine.toSpec` reconstructs
+the specification configuration when needed; decoding never occurs inside the execution loop.
+Other store components, struct fields and GC array instances retain their list representations.
 
-`Wasm.Fast.Store.Rel` relates stores by equality after decoding: the fast array's `toList`
-equals the specification list, and every other component agrees. Allocation, lookup, mutation,
-and runtime reference typing have kernel-checked correspondence lemmas.
-`Wasm.Fast.stepConfiguration_spec` maps each successful fast transition to one original
-`Wasm.ConfigStep`; `Wasm.Fast.runConfiguration_spec` maps execution to `Wasm.ConfigSteps`.
-These proofs use only Lean's standard axioms, with no `sorry` or new axioms. The stronger
-claim that both executors always return exactly the same optional step and run status is
-covered by differential regression tests, rather than a general equality theorem.
+The machine holds current instructions, a top-first operand stack, the current frame
+(locals and module), and suspended labels, handlers and calls. It dispatches to one certified
+instruction family, supplying only the operand packet. Boundary events reconstruct the
+immediate context and unwind one specification step at a time. Struct updates are deferred
+until the old input can be released, allowing array `push` without retaining an old snapshot.
+An embedder retaining an earlier heap snapshot can still cause array copying.
 
-Allocation uses array `push` and lookup uses array indexing. Struct scanning returns a planned
-update, applied after dispatch and the fuel runner choose that step, so retaining the input
-during fallback does not force an array copy on every allocation. A checked equality connects
-the runner's deferred step plan to the fast single-step dispatcher. Lean arrays can still copy when a caller retains
-an earlier heap snapshot. Struct fields and the GC array-instance heap remain lists.
-The heap-only executor retains nested administrative instruction traversal. The explicit
-stack executor below removes that traversal from ordinary instruction dispatch. The `wast` CLI continues to use its
-existing backend, whose broader coverage exceeds the certified configuration executor.
+`Wasm.Native.run` and `Wasm.Native.runMachine` use hooks on the same `Machine.execute` fuel
+loop for native floating-point arithmetic, SIMD extensions, spectest output and call-depth
+limits. Ordinary instructions do not traverse suspended contexts for call-depth checks;
+only possible function activations count suspended calls. `Native.runMachine` supports
+resumption without converting the heap or reconstructing nested code. Native extensions
+have the same unproved execution status as before this migration.
 
-The default build runs differential tests over complete configurations and statuses, several
-fuel limits, resumed execution, heap boundaries, and instruction-family fixtures. Measure
-compiled execution with:
+The public `stepConfiguration_sound`, `runConfiguration_sound`, `runConfiguration_finished`
+and `runConfiguration_trapped` theorems retain their statements. The machine proves each
+successful semantic transition corresponds to one original `ConfigStep`, complete runs follow
+`ConfigSteps`, and reported finished/trapped/exception/exhausted results have their stated
+semantic meaning. Administrative moves preserve reconstruction exactly and terminate by a
+strictly decreasing code-size measure, erased at runtime. They consume no fuel. Heap lookup,
+allocation, mutation and reference typing retain their correspondence proofs. No general
+completeness/no-new-stuck theorem is claimed, matching the original executor's proof scope.
+All correctness proofs use only Lean's standard axioms, with no `sorry` or new axioms.
+
+The default build checks instruction-family fixtures, multi-value branches, calls and tail
+calls through handlers, exception references, heap boundaries, API conversions, fuel
+composition and resumption. Native tests additionally check output ordering and that status
+probing/resumption does not print speculatively or repeat output. The conformance harness
+includes a mixed machine integration script combining heap operations, floats, exceptions,
+mutable globals and direct/reference/tail host calls.
+
+Measure compiled machine execution with:
 
 ```sh
 python3 tests/benchmark-fast.py
 # A shorter run:
-python3 tests/benchmark-fast.py --sizes 1000 4000 --repeat 3
+python3 tests/benchmark-fast.py --sizes 1000 16000 --depths 0 256 --repeat 3
 ```
 
-The harness alternates backends, discards warm-up samples, and records individual timings,
-medians, spread, machine/toolchain metadata, and boundary-conversion costs in
-`.cache/benchmarks/`. Workloads cover primitive allocation and lookup, complete allocation
-loops, allocation plus reads, linked structures with function calls and casts, fixed heaps
-with early/middle/late reads, and a control-only baseline. Code size stays constant as heap
-size grows. Timers use IO evaluation barriers to prevent pure computation from moving across
-timer reads. These synthetic workloads require no external application checkout.
+The harness measures certified and native policies on the same engine. It records fresh-process
+samples, medians, spread, hardware/toolchain/source metadata, and input/output conversion costs
+in `.cache/benchmarks/`. Workloads cover allocation, reads, linked structures, control loops,
+blocks, calls, tail-call chains, handlers and exception unwinding. These synthetic workloads
+require no external application checkout and do not predict application speedups.
 
-Primitive heap cases time operations on prepared stores and report zero conversion costs.
-Their “end-to-end” column is therefore the operation ratio. Complete executor cases measure
-both configuration conversions separately and include them in the end-to-end ratio.
+Historical migration measurements are preserved in
+[array heap](benchmarks/array-heap/summary.md) and
+[explicit stack](benchmarks/explicit-stack/summary.md). The explicit-stack run recorded
+966 samples: at 16,000 allocations, 57.2 ms for the machine versus 115.9 ms for the heap-only
+runner, a further 2.02× gain and 50.25× over the original including conversions. At depth 256,
+1,000 loop iterations under blocks took 3.8 ms versus 444.9 ms; under handlers, 3.8 ms versus
+914.9 ms; under suspended calls, 4.1 ms versus 5,400.3 ms. Archived comparisons remain
+reproducible from their recorded revisions; the current harness contains no slow executor.
 
-[Recorded measurements](benchmarks/array-heap/summary.md) on an Apple M1 use seven samples
-per case, five sizes from 1,000 to 16,000, and all eleven workloads. At 16,000 structs:
-
-| Complete workload | Original ms | Fast ms | Speedup including conversions |
-| --- | ---: | ---: | ---: |
-| Allocation | 2,839.9 | 114.7 | 24.73× |
-| Allocation and reads | 3,925.7 | 125.8 | 31.18× |
-| Linked structures, calls and casts | 7,659.2 | 446.9 | 17.13× |
-| Late-address reads | 847.3 | 112.3 | 7.53× |
-| Control only | 130.2 | 129.3 | 1.01× |
-
-Early-address executor reads are about 1% slower. The fast allocation loop scales from 7.2 ms
-at 1,000 structs to 114.7 ms at 16,000, consistent with linear growth over these sizes.
-These are synthetic executor measurements; they establish heap scaling and do not predict
-an application's speedup. The recorded directory includes raw samples, metadata and source
-hashes. Validation passed `lake build` (including fast differential tests) and all 257 scripts /
-65,202 commands of the unchanged backend's pinned conformance suite.
-
-## Explicit execution stack
-
-`Wasm.Fast.Machine` keeps the current code, a top-first operand stack, the current frame
-(locals and module), and suspended labels, handlers, and calls. It retains the array heap.
-Entering administrative contexts and moving constants onto the stack preserve the decoded
-configuration exactly. Opcode dispatch selects one certified instruction family and supplies
-only its operand packet. Returns, branches, tail calls, traps, and exceptions inspect the
-immediate suspended context and unwind one specification step at a time.
-
-```lean
-import Wasm.Fast
-
-def executeMachine (fuel : Nat) (input : Wasm.Configuration) : Wasm.Configuration :=
-  let machine := Wasm.Fast.Machine.ofConfiguration (Wasm.Fast.Configuration.ofSpec input)
-  (Wasm.Fast.Machine.run fuel machine).state.toSpec
-```
-
-Retain the returned machine when resuming. `Machine.toConfiguration` reconstructs the nested
-fast configuration; `Machine.toSpec` additionally converts the heap. Reconstruction is used
-at boundaries and in erased proofs, never in the execution loop. Boundary events reconstruct
-one context only. The loop preserves deferred struct updates so allocation can consume the
-array without retaining an old snapshot.
-
-`Machine.normalize_same` proves the administrative moves preserve reconstruction; their
-strictly decreasing code-size measure proves termination and is erased at runtime.
-`Machine.step_spec` proves each successful semantic transition is one original `ConfigStep`.
-`Machine.run_spec` proves the complete reduction sequence, and `Machine.run_status_spec`
-proves finished values, traps, uncaught exceptions, and that exhausted runs can take another
-specification step. Administrative moves consume no fuel. These results use only standard
-Lean axioms. A general reverse simulation or no-new-stuck theorem remains unproved; tests
-compare optional steps, complete configurations, statuses, fuel boundaries and resumption.
-The instruction-family fixtures include multi-value branches, calls through handlers,
-tail calls, mutable structures, reference exceptions, memory, tables, globals, arrays and SIMD.
-
-Measure all three implementations with:
-
-```sh
-python3 tests/benchmark-stack.py --hardware 'Apple M1'
-```
-
-The harness measures heap workloads at 1,000, 4,000 and 16,000 iterations, and blocks,
-calls, tail calls, handlers and exception unwinding at depths 0, 4, 16, 64 and 256.
-Depth cases hold the leaf loop at 1,000 iterations. Each backend runs in a fresh process;
-order rotates and reverses, with one warm-up and seven recorded repetitions per case.
-Input/output conversion costs are separate. Results, raw samples, source hashes and metadata
-are recorded in [benchmarks/explicit-stack](benchmarks/explicit-stack/summary.md).
-
-The recorded Apple M1 run contains 966 samples. At 16,000 allocations the machine takes
-57.2 ms versus 115.9 ms for the heap-only executor: a further 2.02× gain, or 50.25× over the
-original including conversions. The control loop improves another 2.24×. At depth 256,
-1,000 iterations under blocks take 3.8 ms versus 444.9 ms with the heap-only executor;
-handlers take 3.8 ms versus 914.9 ms, and suspended calls take 4.1 ms versus 5,400.3 ms.
-Machine time stays nearly flat over the measured depths. Tail-call chains remain bounded
-in active depth and improve 2.88× at chain length 256. These synthetic depth cases isolate
-context traversal and should not be treated as application speedup predictions.
+[Unified executor measurements](benchmarks/unified-executor/summary.md) record the current
+shared loop under both certified and native policies. The complete pinned conformance suite
+passes on this machine: 257 scripts and 65,202 commands, with zero failures or unsupported
+commands. Native extensions retain their existing proof scope.
 
 ## Implemented features
 
@@ -222,8 +185,8 @@ reduction relation (`stepConfiguration_sound`, `runConfiguration_sound`). Instan
 soundness proofs, and instruction families establish additional typing and resource invariants.
 Integer/bitwise SIMD and vector memory execution are included in certified stepping.
 
-The `.wast` runner uses a separate native backend for floating-point arithmetic and `spectest`
-host calls. Their execution correctness is unproved; scalar and vector floating instruction
+The `.wast` runner uses native extensions on the same execution machine for floating-point
+arithmetic and `spectest` host calls. Their execution correctness is unproved; scalar and vector floating instruction
 validation is included in the validator soundness proof. Relaxed SIMD selects one allowed
 result profile rather than enumerating every permitted result.
 
@@ -239,7 +202,7 @@ axiom dependencies.
 | --- | --- |
 | Syntax and runtime | [Syntax](Wasm/Syntax.lean), [Runtime](Wasm/Runtime.lean), [Module](Wasm/Module.lean) |
 | Types and validation | [TypeSyntax](Wasm/TypeSyntax.lean), [ExecutableValidation](Wasm/ExecutableValidation.lean), [Soundness](Wasm/ExecutableValidationSoundness.lean) |
-| Certified execution | [Configuration](Wasm/Configuration.lean), [Instantiation](Wasm/Instantiation.lean), instruction-specific steppers |
+| Certified execution | [Configuration API](Wasm/Configuration.lean), [Machine](Wasm/Fast/MachineExecution.lean), [Semantics](Wasm/ConfigurationSemantics.lean), [Instantiation](Wasm/Instantiation.lean) |
 | SIMD | [Vectors](Wasm/Vectors.lean), [VectorStepper](Wasm/VectorStepper.lean), [VectorValidation](Wasm/VectorValidation.lean) |
 | Native arithmetic and hosts | [NativeExecution](Wasm/NativeExecution.lean), [NativeFloat](Wasm/NativeFloat.lean), [NativeVector](Wasm/NativeVector.lean), [Spectest](Wasm/Spectest.lean) |
 | Parsing and scripts | [Text/Module](Wasm/Text/Module.lean), [Binary/Decode](Wasm/Binary/Decode.lean), [Text/Script](Wasm/Text/Script.lean), [CLI](WastMain.lean) |

@@ -397,13 +397,4 @@ theorem ConfigSteps.toSpec (h : ConfigSteps c final) :
   | refl => exact .refl
   | cons h _ ih => exact .cons h.toSpec ih
 
-/-- Each successful fast step is one step of the existing specification. -/
-theorem stepConfiguration_spec (h : stepConfiguration c = some next) :
-    Wasm.ConfigStep c.toSpec next.toSpec := (stepConfiguration_sound h).toSpec
-
-/-- Execution follows the unchanged specification; the array heap is decoded only in proofs. -/
-theorem runConfiguration_spec :
-    Wasm.ConfigSteps c.toSpec (runConfiguration fuel c).state.toSpec :=
-  (runConfiguration_sound).toSpec
-
 end Wasm.Fast

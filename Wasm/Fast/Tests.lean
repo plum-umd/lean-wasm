@@ -10,32 +10,26 @@ namespace Wasm.Fast.Tests
 private def check (name : String) (ok : Bool) : IO Unit :=
   unless ok do throw (IO.userError s!"fast executor regression: {name}")
 
-private def agreement (name : String) (c : Wasm.Configuration)
-    (budgets : List Nat := [0, 1, 2, 3, 5, 10, 40, 200, 10000])
-    (resumeFuel : Nat := 10000) : IO Unit := do
+-- Compare API boundaries and fuel composition, retaining one execution implementation.
+private def execution (name : String) (c : Wasm.Configuration) : IO Unit := do
   let fast := Configuration.ofSpec c
+  let initial := Machine.ofConfiguration fast
   check (name ++ ": input roundtrip") (fast.toSpec == c)
-  for budget in budgets do
-    let a := Wasm.runConfiguration budget c
-    let b := runConfiguration budget fast
-    let machine := Machine.run budget (Machine.ofConfiguration fast)
-    check (name ++ s!": machine state/fuel {budget}") (a.state == machine.state.toSpec)
-    check (name ++ s!": machine status/fuel {budget}") (a.status == machine.status)
-    check (name ++ s!": machine optional step {budget}")
-      (Wasm.stepConfiguration a.state == (Machine.step machine.state).map Machine.toSpec)
-    let machineResumed := Machine.run resumeFuel machine.state
-    let baselineResumed := Wasm.runConfiguration resumeFuel a.state
-    check (name ++ s!": machine resume {budget}")
-      (machineResumed.state.toSpec == baselineResumed.state &&
-        machineResumed.status == baselineResumed.status)
-    check (name ++ s!": state/fuel {budget}") (a.state == b.state.toSpec)
-    check (name ++ s!": status/fuel {budget}") (a.status == b.status)
-    check (name ++ s!": optional step {budget}")
-      (Wasm.stepConfiguration a.state == (stepConfiguration b.state).map Configuration.toSpec)
-    let resumed := runConfiguration resumeFuel b.state
-    let expected := Wasm.runConfiguration resumeFuel a.state
-    check (name ++ s!": resume {budget}")
-      (resumed.state.toSpec == expected.state && resumed.status == expected.status)
+  check (name ++ ": normalize") ((Machine.normalize initial).toSpec == c)
+  for budget in [0, 1, 2, 3, 5, 10, 40, 200, 10000] do
+    let result := Machine.run budget initial
+    let publicResult := Wasm.runConfiguration budget c
+    check (name ++ s!": public boundary/fuel {budget}")
+      (publicResult.state == result.state.toSpec && publicResult.status == result.status)
+    check (name ++ s!": optional-step boundary {budget}")
+      (Wasm.stepConfiguration publicResult.state == (Machine.step result.state).map Machine.toSpec)
+    let resumed := Machine.run 10000 result.state
+    let combined := Machine.run (budget + 10000) initial
+    check (name ++ s!": fuel composition {budget}")
+      (resumed.state.toSpec == combined.state.toSpec && resumed.status == combined.status)
+    let boundaryResumed := Wasm.runConfiguration 10000 publicResult.state
+    check (name ++ s!": resume boundary {budget}")
+      (boundaryResumed.state == resumed.state.toSpec && boundaryResumed.status == resumed.status)
 
 private def prepare (source : String) : Except String Wasm.Configuration := do
   let exprs ← (Text.parse source).mapError id
@@ -150,14 +144,14 @@ private def fixtures : List (String × String × List Value) := [
       "read-late", "control"] do
     for n in [1, 7, 35] do
       let c := Workloads.configuration kind n
-      agreement s!"{kind}/{n}" c
+      execution s!"{kind}/{n}" c
       let result := runConfiguration (Workloads.fuel kind n) (Configuration.ofSpec c)
       check s!"{kind}/{n}: expected result"
         (result.status == RunStatus.finished (Workloads.expected kind n))
   for kind in DepthWorkloads.kinds do
     for depth in [0, 1, 3, 10, 32] do
       let c := DepthWorkloads.configuration kind 3 depth
-      agreement s!"depth/{kind}/{depth}" c
+      execution s!"depth/{kind}/{depth}" c
       let result := Machine.run (DepthWorkloads.fuel 3 depth)
         (Machine.ofConfiguration (Configuration.ofSpec c))
       check s!"depth/{kind}/{depth}: expected result"
@@ -166,7 +160,7 @@ private def fixtures : List (String × String × List Value) := [
     let c ← match prepare source with
       | .ok c => pure c
       | .error e => throw (IO.userError s!"{name}: {e}")
-    agreement name c
+    execution name c
     let result := runConfiguration 10000 (Configuration.ofSpec c)
     check (name ++ ": expected result")
       (result.status ==
@@ -174,7 +168,7 @@ private def fixtures : List (String × String × List Value) := [
   for operandDepth in [0, 1, 32, 128] do
     let code := values ((List.range operandDepth).map fun n => .i64 (BitVec.ofNat 64 n)) ++
       instructions [.const (.i64 7), .const (.i64 9), .binop .i64 .add]
-    agreement s!"operand-prefix/{operandDepth}" ⟨{}, {}, code⟩
+    execution s!"operand-prefix/{operandDepth}" ⟨{}, {}, code⟩
   for code in ([[], [.instr .drop], [.instr (.structNew 0 false)],
       [.instr (.const (.ref (.struct_ ⟨999⟩))), .instr (.refTest false .struct_)],
       [.instr (.call 0)], [.instr (.br 0)], [.instr .return_],
@@ -183,7 +177,7 @@ private def fixtures : List (String × String × List Value) := [
       [.frame 0 {} (values [.i32 1])],
       [.frame 1 {} (values [.i32 1] ++ instructions [.return_])],
       [.handler [] [.trap]], [.frame 0 {} [.throwing ⟨999⟩]]] : List (List AdminInstr)) do
-    agreement "invalid/terminal configuration" ⟨{}, {}, code⟩
+    execution "invalid/terminal configuration" ⟨{}, {}, code⟩
 
 -- Exercise opcode routing and arity selection with both usable and malformed operands.
 #eval show IO Unit from do
@@ -238,13 +232,13 @@ private def fixtures : List (String × String × List Value) := [
           [.frame 1 frame [.label 1 [] [.handler [.all 0 true] [.label 1 [] body]]]]] do
         let c : Wasm.Configuration := ⟨initialized.state.store, frame, code⟩
         let machine := Machine.ofConfiguration (Configuration.ofSpec c)
-        let name := s!"opcode-matrix/{repr op}/{stack.length}"
+        let name := s!"dispatch-matrix/{repr op}/{stack.length}"
         check (name ++ ": optional step")
           (Wasm.stepConfiguration c == (Machine.step machine).map Machine.toSpec)
-        let expected := Wasm.runConfiguration 5 c
+        let expected := Machine.run 5 (Machine.normalize machine)
         let actual := Machine.run 5 machine
         check (name ++ ": five-step run")
-          (expected.state == actual.state.toSpec && expected.status == actual.status)
+          (expected.state.toSpec == actual.state.toSpec && expected.status == actual.status)
 
 #print axioms Wasm.Fast.Store.allocateStruct_toSpec
 #print axioms Wasm.Fast.stepConfiguration_spec

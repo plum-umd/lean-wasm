@@ -1,5 +1,9 @@
 # Recorded array heap measurements
 
+Historical comparison, measured before executor unification. The legacy runners and
+comparison harness are preserved in Git at `318d3d0`, rather than in the current implementation.
+Reproduce the command below from that revision in a separate checkout.
+
 Run command:
 
 ```sh

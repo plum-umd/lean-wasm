@@ -1,4 +1,4 @@
-import Wasm.Configuration
+import Wasm.ConfigurationSemantics
 
 /-! Array-backed struct storage. Specification conversion is a boundary operation. -/
 namespace Wasm.Fast

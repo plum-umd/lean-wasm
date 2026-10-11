@@ -1,2 +1,1 @@
-import Wasm.Fast.Correspondence
-import Wasm.Fast.MachineExecution
+import Wasm.Fast.Executor
