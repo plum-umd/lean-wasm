@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  conformance:
+    name: Lean build and full WAST suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build library, proofs, and Lean regressions
+        uses: leanprover/lean-action@v1
+        with:
+          auto-config: "false"
+          build: "true"
+
+      - name: Fetch pinned WebAssembly testsuite
+        run: sh tests/setup-testsuite.sh
+
+      - name: Run full WAST conformance suite
+        run: sh tests/check-wast.sh --full

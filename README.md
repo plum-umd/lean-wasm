@@ -27,6 +27,10 @@ Run the complete conformance regression:
 sh tests/check-wast.sh --full
 ```
 
+[GitHub Actions](.github/workflows/ci.yml) runs the full Lean build and this suite on every
+push and pull request, and can also be started manually. Each job fetches a fresh upstream
+checkout at the recorded revision.
+
 An existing, clean checkout at the recorded revision can also be used:
 
 ```sh
