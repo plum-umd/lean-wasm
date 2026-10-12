@@ -1,6 +1,6 @@
-import Wasm.Fast.Store
+import Wasm.Store
 
-namespace Wasm.Fast
+namespace Wasm.Execution
 
 /-- Function reference types come from the store. Null uses its hierarchy bottom. -/
 def RefValue.type? (store : Store) : RefValue → Option ValType
@@ -252,4 +252,4 @@ theorem Invokes.toSpec (h : Invokes s f vs activation) :
       split <;> split <;> simp_all
     · rfl
 
-end Wasm.Fast
+end Wasm.Execution

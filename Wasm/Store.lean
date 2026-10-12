@@ -1,7 +1,7 @@
 import Wasm.ConfigurationSemantics
 
 /-! Array-backed struct storage. Specification conversion is a boundary operation. -/
-namespace Wasm.Fast
+namespace Wasm.Execution
 
 structure Store where
   funcs : List FuncInst := []
@@ -253,4 +253,4 @@ theorem Store.struct?_rel (h : Store.Rel fast spec) (a : StructAddr) :
 @[simp] theorem Store.toSpec_exns_update (s : Store) (objects : List ExnInst) :
     ({s with exns := objects} : Store).toSpec = {s.toSpec with exns := objects} := rfl
 
-end Wasm.Fast
+end Wasm.Execution

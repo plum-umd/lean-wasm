@@ -1,7 +1,7 @@
-import Wasm.Fast.Runtime
-import Wasm.Fast.Tables
+import Wasm.ExecutionRuntime
+import Wasm.ExecutionTables
 
-namespace Wasm.Fast
+namespace Wasm.Execution
 inductive ArrayAccess (store : Store) (state : Frame) (x : Nat) (address : ArrayAddr)
     (object : ArrayInst) (field : Types.FieldType) : Prop where
   | mk (type : Types.DefinedType) (lookupType : state.module.definedTypes[x]? = some type)
@@ -454,4 +454,4 @@ theorem ArrayStep.resources_preserved (h : ArrayStep store state code next code'
   | redex reduced => cases reduced <;> exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
   | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
 
-end Wasm.Fast
+end Wasm.Execution

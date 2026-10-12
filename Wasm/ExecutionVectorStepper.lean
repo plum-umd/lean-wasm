@@ -1,6 +1,6 @@
-import Wasm.Fast.Runtime
+import Wasm.ExecutionRuntime
 
-namespace Wasm.Fast
+namespace Wasm.Execution
 
 
 /-- A vector memory instruction yields an optional write. All bounds use the full, unwrapped
@@ -142,4 +142,4 @@ theorem VectorStep.resources_preserved (h : VectorStep store state code next cod
       cases write <;> simp [vectorMemoryStore, Store.setMemory]
   | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
 
-end Wasm.Fast
+end Wasm.Execution

@@ -1,6 +1,6 @@
-import Wasm.Fast.Runtime
+import Wasm.ExecutionRuntime
 
-namespace Wasm.Fast
+namespace Wasm.Execution
 
 inductive TableReduces (store : Store) (state : Frame) :
     List AdminInstr → Store → List AdminInstr → Prop where
@@ -131,4 +131,4 @@ theorem TableStep.elem_count_preserved (h : TableStep store state es store' es')
   | redex h => cases h <;> simp [Store.setTable, Store.dropElem]
   | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
 
-end Wasm.Fast
+end Wasm.Execution

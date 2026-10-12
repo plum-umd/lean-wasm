@@ -1,6 +1,6 @@
-import Wasm.Fast.Runtime
+import Wasm.ExecutionRuntime
 
-namespace Wasm.Fast
+namespace Wasm.Execution
 inductive StructReduces : Store → Frame → List AdminInstr → Store → List AdminInstr → Prop where
   | new (ht : state.module.definedTypes[x]? = some type)
       (hf : type.expandComposite? = some (.struct_ fields))
@@ -243,4 +243,4 @@ theorem StructStep.resources_preserved (h : StructStep store state code next cod
   | redex reduced => cases reduced <;> exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
   | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
 
-end Wasm.Fast
+end Wasm.Execution

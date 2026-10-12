@@ -1,6 +1,6 @@
-import Wasm.Fast.Runtime
+import Wasm.ExecutionRuntime
 
-namespace Wasm.Fast
+namespace Wasm.Execution
 
 inductive GlobalStep : Store → Frame → List AdminInstr → Store → List AdminInstr → Prop where
   | get (ha : state.module.globalAddr? x = some address)
@@ -97,4 +97,4 @@ theorem GlobalStep.length_preserved (h : GlobalStep store state es store' es') :
   | set => simp [Store.setGlobal]
   | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
 
-end Wasm.Fast
+end Wasm.Execution

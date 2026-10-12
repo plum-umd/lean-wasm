@@ -1,7 +1,7 @@
-import Wasm.Fast.Runtime
-import Wasm.Fast.Memory
+import Wasm.ExecutionRuntime
+import Wasm.ExecutionMemory
 
-namespace Wasm.Fast
+namespace Wasm.Execution
 
 
 abbrev CheckedMemoryStep (store : Store) (state : Frame) (es : List AdminInstr) :=
@@ -111,4 +111,4 @@ theorem stepMemory_sound (h : stepMemory store state es = some next) :
   | none => simp [hs] at h
   | some s => simp [hs] at h; subst next; exact s.property
 
-end Wasm.Fast
+end Wasm.Execution

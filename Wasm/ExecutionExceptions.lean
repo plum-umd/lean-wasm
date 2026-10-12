@@ -1,6 +1,6 @@
-import Wasm.Fast.Runtime
+import Wasm.ExecutionRuntime
 
-namespace Wasm.Fast
+namespace Wasm.Execution
 
 
 /-! Exception allocation, ordered catch selection, and unwinding from Wasm 3.0.
@@ -222,4 +222,4 @@ theorem ExceptionStep.resources_preserved (h : ExceptionStep store state code ne
   | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
   | _ => exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
 
-end Wasm.Fast
+end Wasm.Execution

@@ -1,6 +1,6 @@
-import Wasm.Fast.Machine
+import Wasm.Machine
 
-namespace Wasm.Fast.Machine
+namespace Wasm.Execution.Machine
 
 inductive RedexPlan where
   | ready (next : Configuration)
@@ -156,4 +156,4 @@ def unwind (context : MachineContext) (head : Option AdminInstr)
     | .handler _ => checkedExceptions c
     | _ => checkedPure c
 
-end Wasm.Fast.Machine
+end Wasm.Execution.Machine

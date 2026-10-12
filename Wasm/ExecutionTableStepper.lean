@@ -1,7 +1,7 @@
-import Wasm.Fast.Runtime
-import Wasm.Fast.Tables
+import Wasm.ExecutionRuntime
+import Wasm.ExecutionTables
 
-namespace Wasm.Fast
+namespace Wasm.Execution
 
 
 abbrev CheckedTableStep (store : Store) (state : Frame) (es : List AdminInstr) :=
@@ -170,4 +170,4 @@ theorem stepTables_sound (h : stepTables store state es = some next) :
   | none => simp [hs] at h
   | some s => simp [hs] at h; subst next; exact s.property
 
-end Wasm.Fast
+end Wasm.Execution

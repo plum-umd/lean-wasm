@@ -1,7 +1,7 @@
-import Wasm.Fast.Correspondence
+import Wasm.Correspondence
 
 /-! Deterministic configurations shared by differential tests and compiled benchmarks. -/
-namespace Wasm.Fast.Workloads
+namespace Wasm.Execution.Workloads
 
 -- A fixed-size immutable payload, and an immutable node with a reference to its predecessor.
 def payloadType : Types.DefinedType :=
@@ -66,4 +66,4 @@ def expected (kind : String) (n : Nat) : List Value :=
     else if kind == "read-middle" then n / 2
     else if kind == "read-late" then n - 1 else 7))]
 
-end Wasm.Fast.Workloads
+end Wasm.Execution.Workloads

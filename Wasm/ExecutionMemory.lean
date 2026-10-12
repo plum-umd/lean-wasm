@@ -1,6 +1,6 @@
-import Wasm.Fast.Runtime
+import Wasm.ExecutionRuntime
 
-namespace Wasm.Fast
+namespace Wasm.Execution
 
 inductive MemoryStep : Store → Frame → List AdminInstr → Store → List AdminInstr → Prop where
   | access (ha : state.module.memAddr? x = some address)
@@ -35,4 +35,4 @@ theorem MemoryStep.count_preserved (h : MemoryStep store state es store' es') :
   | access _ _ _ hr => cases hr <;> simp [Store.applyMemory, Store.setMemory]
   | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
 
-end Wasm.Fast
+end Wasm.Execution

@@ -1,7 +1,7 @@
-import Wasm.Fast.Configuration
+import Wasm.ExecutionConfiguration
 
 /-! Correspondence to the unchanged reduction semantics. All decoding here is erased. -/
-namespace Wasm.Fast
+namespace Wasm.Execution
 
 set_option maxRecDepth 4096
 set_option maxHeartbeats 1000000
@@ -397,4 +397,4 @@ theorem ConfigSteps.toSpec (h : ConfigSteps c final) :
   | refl => exact .refl
   | cons h _ ih => exact .cons h.toSpec ih
 
-end Wasm.Fast
+end Wasm.Execution

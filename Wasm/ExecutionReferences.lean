@@ -1,6 +1,6 @@
-import Wasm.Fast.Runtime
+import Wasm.ExecutionRuntime
 
-namespace Wasm.Fast
+namespace Wasm.Execution
 inductive ReferenceReduces (store : Store) (state : Frame) :
     List AdminInstr → List AdminInstr → Prop where
   | testYes (closedType : heap.close? state.module.definedTypes = some closed)
@@ -254,4 +254,4 @@ theorem stepReferences_sound (h : stepReferences store state es = some next) :
   | none => simp [hs] at h
   | some s => simp [hs] at h; subst next; exact s.property
 
-end Wasm.Fast
+end Wasm.Execution

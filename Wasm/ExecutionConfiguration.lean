@@ -1,17 +1,17 @@
-import Wasm.Fast.VectorStepper
-import Wasm.Fast.Runtime
+import Wasm.ExecutionVectorStepper
+import Wasm.ExecutionRuntime
 import Wasm.Stepper
-import Wasm.Fast.Calls
-import Wasm.Fast.Globals
-import Wasm.Fast.MemoryStepper
-import Wasm.Fast.BulkMemoryStepper
-import Wasm.Fast.References
-import Wasm.Fast.TableStepper
-import Wasm.Fast.Arrays
-import Wasm.Fast.Structures
-import Wasm.Fast.Exceptions
+import Wasm.ExecutionCalls
+import Wasm.ExecutionGlobals
+import Wasm.ExecutionMemoryStepper
+import Wasm.ExecutionBulkMemoryStepper
+import Wasm.ExecutionReferences
+import Wasm.ExecutionTableStepper
+import Wasm.ExecutionArrays
+import Wasm.ExecutionStructures
+import Wasm.ExecutionExceptions
 
-namespace Wasm.Fast
+namespace Wasm.Execution
 
 structure Configuration where
   store : Store
@@ -61,4 +61,4 @@ inductive ConfigSteps : Configuration → Configuration → Prop where
   | refl : ConfigSteps config config
   | cons : ConfigStep config middle → ConfigSteps middle final → ConfigSteps config final
 
-end Wasm.Fast
+end Wasm.Execution

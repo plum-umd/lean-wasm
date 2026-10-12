@@ -57,12 +57,12 @@ Exit codes are **0** for complete success, **1** for failures, and **2** for uns
 ## Execution machine
 
 The certified APIs and the `wast` CLI use one explicit execution machine with an
-`Array StructInst` heap. The specification store and reduction rules remain unchanged.
-The original list-heap configuration runner and the intermediate heap-only runner have
-been removed. Instruction evaluators and the declarative reduction relations remain the
-correctness specification and certified building blocks.
+`Array StructInst` heap. Its runtime store is related to the specification store through
+a boundary conversion, and each certified transition follows the reduction rules.
+Instruction evaluators are certified building blocks, and the declarative reduction
+relations provide the correctness specification.
 
-Existing callers can keep using the specification-configuration boundary:
+Execute a specification configuration with:
 
 ```lean
 import Wasm.Configuration
@@ -77,18 +77,18 @@ calling the specification single-step API converts at each call; retain a machin
 sustained execution or resumption:
 
 ```lean
-import Wasm.Fast
+import Wasm.Execution
 
-def start (input : Wasm.Configuration) : Wasm.Fast.Machine :=
-  Wasm.Fast.Machine.ofConfiguration (Wasm.Fast.Configuration.ofSpec input)
+def start (input : Wasm.Configuration) : Wasm.Execution.Machine :=
+  Wasm.Execution.Machine.ofConfiguration (Wasm.Execution.Configuration.ofSpec input)
 
-def resume (fuel : Nat) (machine : Wasm.Fast.Machine) : Wasm.Fast.Machine.RunResult :=
-  Wasm.Fast.Machine.run fuel machine
+def resume (fuel : Nat) (machine : Wasm.Execution.Machine) : Wasm.Execution.Machine.RunResult :=
+  Wasm.Execution.Machine.run fuel machine
 ```
 
-`Wasm.Fast.runConfiguration` is also a compatibility boundary around the same machine,
-retaining the array heap in its returned configuration. `Wasm.Fast.Machine.toSpec` reconstructs
-the specification configuration when needed; decoding never occurs inside the execution loop.
+`Wasm.Execution.runConfiguration` retains the array heap in its returned configuration.
+`Wasm.Execution.Machine.toSpec` reconstructs the specification configuration when needed;
+decoding never occurs inside the execution loop.
 Other store components, struct fields and GC array instances retain their list representations.
 
 The machine holds current instructions, a top-first operand stack, the current frame
@@ -103,16 +103,16 @@ loop for native floating-point arithmetic, SIMD extensions, spectest output and 
 limits. Ordinary instructions do not traverse suspended contexts for call-depth checks;
 only possible function activations count suspended calls. `Native.runMachine` supports
 resumption without converting the heap or reconstructing nested code. Native extensions
-have the same unproved execution status as before this migration.
+have unproved execution correctness.
 
 The public `stepConfiguration_sound`, `runConfiguration_sound`, `runConfiguration_finished`
-and `runConfiguration_trapped` theorems retain their statements. The machine proves each
-successful semantic transition corresponds to one original `ConfigStep`, complete runs follow
+and `runConfiguration_trapped` theorems connect the API to the reduction rules. Each successful
+semantic transition corresponds to one `ConfigStep`, complete runs follow
 `ConfigSteps`, and reported finished/trapped/exception/exhausted results have their stated
 semantic meaning. Administrative moves preserve reconstruction exactly and terminate by a
 strictly decreasing code-size measure, erased at runtime. They consume no fuel. Heap lookup,
-allocation, mutation and reference typing retain their correspondence proofs. No general
-completeness/no-new-stuck theorem is claimed, matching the original executor's proof scope.
+allocation, mutation and reference typing have correspondence proofs. General
+completeness and absence-of-step correctness remain future proof goals.
 All correctness proofs use only Lean's standard axioms, with no `sorry` or new axioms.
 
 The default build checks instruction-family fixtures, multi-value branches, calls and tail
@@ -136,19 +136,11 @@ in `.cache/benchmarks/`. Workloads cover allocation, reads, linked structures, c
 blocks, calls, tail-call chains, handlers and exception unwinding. These synthetic workloads
 require no external application checkout and do not predict application speedups.
 
-Historical migration measurements are preserved in
-[array heap](benchmarks/array-heap/summary.md) and
-[explicit stack](benchmarks/explicit-stack/summary.md). The explicit-stack run recorded
-966 samples: at 16,000 allocations, 57.2 ms for the machine versus 115.9 ms for the heap-only
-runner, a further 2.02× gain and 50.25× over the original including conversions. At depth 256,
-1,000 loop iterations under blocks took 3.8 ms versus 444.9 ms; under handlers, 3.8 ms versus
-914.9 ms; under suspended calls, 4.1 ms versus 5,400.3 ms. Archived comparisons remain
-reproducible from their recorded revisions; the current harness contains no slow executor.
-
-[Unified executor measurements](benchmarks/unified-executor/summary.md) record the current
-shared loop under both certified and native policies. The complete pinned conformance suite
-passes on this machine: 257 scripts and 65,202 commands, with zero failures or unsupported
-commands. Native extensions retain their existing proof scope.
+[Recorded machine measurements](benchmarks/unified-executor/summary.md) include 644 samples
+under certified and native policies. On an Apple M1, 16,000 allocations took median execution
+times of 60.4 ms and 61.4 ms respectively. At depth 256, 1,000 loop iterations under suspended
+calls took 4.6 ms and 4.7 ms. The results report conversion costs separately and include the
+source revision and measurement conditions.
 
 ## Implemented features
 
@@ -202,7 +194,7 @@ axiom dependencies.
 | --- | --- |
 | Syntax and runtime | [Syntax](Wasm/Syntax.lean), [Runtime](Wasm/Runtime.lean), [Module](Wasm/Module.lean) |
 | Types and validation | [TypeSyntax](Wasm/TypeSyntax.lean), [ExecutableValidation](Wasm/ExecutableValidation.lean), [Soundness](Wasm/ExecutableValidationSoundness.lean) |
-| Certified execution | [Configuration API](Wasm/Configuration.lean), [Machine](Wasm/Fast/MachineExecution.lean), [Semantics](Wasm/ConfigurationSemantics.lean), [Instantiation](Wasm/Instantiation.lean) |
+| Certified execution | [Configuration API](Wasm/Configuration.lean), [Machine](Wasm/MachineExecution.lean), [Execution store](Wasm/Store.lean), [Semantics](Wasm/ConfigurationSemantics.lean), [Instantiation](Wasm/Instantiation.lean) |
 | SIMD | [Vectors](Wasm/Vectors.lean), [VectorStepper](Wasm/VectorStepper.lean), [VectorValidation](Wasm/VectorValidation.lean) |
 | Native arithmetic and hosts | [NativeExecution](Wasm/NativeExecution.lean), [NativeFloat](Wasm/NativeFloat.lean), [NativeVector](Wasm/NativeVector.lean), [Spectest](Wasm/Spectest.lean) |
 | Parsing and scripts | [Text/Module](Wasm/Text/Module.lean), [Binary/Decode](Wasm/Binary/Decode.lean), [Text/Script](Wasm/Text/Script.lean), [CLI](WastMain.lean) |

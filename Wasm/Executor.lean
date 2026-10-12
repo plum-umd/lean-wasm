@@ -1,6 +1,6 @@
-import Wasm.Fast.MachineExecution
+import Wasm.MachineExecution
 
-namespace Wasm.Fast
+namespace Wasm.Execution
 
 -- These configuration APIs are boundaries around the sole execution machine.
 def stepConfiguration (c : Configuration) : Option Configuration :=
@@ -43,4 +43,4 @@ theorem runConfiguration_status_spec :
     Machine.StatusSpec (runConfiguration fuel c).status (runConfiguration fuel c).state.toSpec :=
   Machine.run_status_spec
 
-end Wasm.Fast
+end Wasm.Execution

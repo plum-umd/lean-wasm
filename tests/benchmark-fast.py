@@ -44,7 +44,11 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     sources = [ROOT / 'BenchMain.lean', ROOT / 'lakefile.toml', Path(__file__).resolve(),
                ROOT / 'Wasm/Configuration.lean', ROOT / 'Wasm/ConfigurationSemantics.lean',
-               ROOT / 'Wasm/NativeExecution.lean', *sorted((ROOT / 'Wasm/Fast').glob('*.lean'))]
+               ROOT / 'Wasm/NativeExecution.lean', *sorted((ROOT / 'Wasm').glob('Execution*.lean')),
+               *sorted((ROOT / 'Wasm').glob('Machine*.lean')),
+               ROOT / 'Wasm/Store.lean', ROOT / 'Wasm/Executor.lean',
+               ROOT / 'Wasm/Correspondence.lean',
+               ROOT / 'Wasm/Workloads.lean', ROOT / 'Wasm/DepthWorkloads.lean']
     metadata = dict(timestamp_utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     revision=command('git', 'rev-parse', 'HEAD'),
                     working_tree=command('git', 'status', '--porcelain'),

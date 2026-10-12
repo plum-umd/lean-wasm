@@ -27,7 +27,7 @@ private def check (condition : Bool) (message : String) : IO Unit :=
   let body := values [.i32 42] ++ [AdminInstr.invoke ⟨1⟩ ⟨[.i32], []⟩]
   let config : Configuration := ⟨{Spectest.store with mems := [], tables := []}, {},
     [.frame 0 {} [.label 0 [] [.handler [] body]]]⟩
-  let machine := Fast.Machine.ofConfiguration (Fast.Configuration.ofSpec config)
+  let machine := Execution.Machine.ofConfiguration (Execution.Configuration.ofSpec config)
   let first := Native.runMachine 1 machine
   check (first.status == RunStatus.exhausted && first.output == [Value.i32 42])
     "host output belongs to its semantic step before unwinding"

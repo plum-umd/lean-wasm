@@ -1,6 +1,6 @@
-import Wasm.Fast.MachineDispatch
+import Wasm.MachineDispatch
 
-namespace Wasm.Fast.Machine
+namespace Wasm.Execution.Machine
 
 structure Change where
   next : Machine
@@ -230,4 +230,4 @@ theorem run_status_spec : StatusSpec (run fuel m).status (run fuel m).state.toSp
   · have sound := terminalStatus_spec (normalize (execute {} fuel m []).state)
     simpa [toSpec, normalize_same] using sound
 
-end Wasm.Fast.Machine
+end Wasm.Execution.Machine

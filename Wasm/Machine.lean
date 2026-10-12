@@ -1,6 +1,6 @@
-import Wasm.Fast.Correspondence
+import Wasm.Correspondence
 
-namespace Wasm.Fast
+namespace Wasm.Execution
 
 inductive MachineContextKind where
   | label (arity : Nat) (continuation : List Instr)
@@ -172,4 +172,4 @@ decreasing_by
   exact next.property.2
 
 end Machine
-end Wasm.Fast
+end Wasm.Execution

@@ -1,6 +1,6 @@
-import Wasm.Fast.Runtime
+import Wasm.ExecutionRuntime
 
-namespace Wasm.Fast
+namespace Wasm.Execution
 
 
 /-! Direct/indirect-call resolution and invocation for the supported runtime projection.
@@ -370,4 +370,4 @@ theorem stepCalls_sound (h : stepCalls store state es = some next) :
     subst next
     simpa [values] using s.property
 
-end Wasm.Fast
+end Wasm.Execution

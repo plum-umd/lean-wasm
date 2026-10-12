@@ -1,7 +1,7 @@
-import Wasm.Fast.Runtime
-import Wasm.Fast.BulkMemory
+import Wasm.ExecutionRuntime
+import Wasm.ExecutionBulkMemory
 
-namespace Wasm.Fast
+namespace Wasm.Execution
 
 
 abbrev CheckedBulkStep (store : Store) (state : Frame) (es : List AdminInstr) :=
@@ -105,4 +105,4 @@ theorem stepBulkMemory_sound (h : stepBulkMemory store state es = some next) :
   | none => simp [hs] at h
   | some s => simp [hs] at h; subst next; exact s.property
 
-end Wasm.Fast
+end Wasm.Execution

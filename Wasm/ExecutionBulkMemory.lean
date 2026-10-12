@@ -1,6 +1,6 @@
-import Wasm.Fast.Runtime
+import Wasm.ExecutionRuntime
 
-namespace Wasm.Fast
+namespace Wasm.Execution
 
 inductive BulkReduces (store : Store) (state : Frame) :
     List AdminInstr → Store → List AdminInstr → Prop where
@@ -83,4 +83,4 @@ theorem BulkStep.data_count_preserved (h : BulkStep store state es store' es') :
   | redex h => cases h <;> simp [Store.dropData]
   | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
 
-end Wasm.Fast
+end Wasm.Execution

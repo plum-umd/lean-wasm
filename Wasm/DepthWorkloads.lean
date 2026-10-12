@@ -1,6 +1,6 @@
-import Wasm.Fast.Workloads
+import Wasm.Workloads
 
-namespace Wasm.Fast.DepthWorkloads
+namespace Wasm.Execution.DepthWorkloads
 
 def kinds : List String := ["blocks", "calls", "tail-calls", "handlers", "unwind"]
 
@@ -40,4 +40,4 @@ def expected (kind : String) (iterations : Nat) : RunStatus :=
   if kind == "unwind" then .exception ⟨0⟩
   else .finished [.i64 (BitVec.ofNat 64 iterations)]
 
-end Wasm.Fast.DepthWorkloads
+end Wasm.Execution.DepthWorkloads

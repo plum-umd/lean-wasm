@@ -1,5 +1,5 @@
 import Wasm.NativeExecution
-import Wasm.Fast.DepthWorkloads
+import Wasm.DepthWorkloads
 
 open Wasm
 
@@ -7,23 +7,23 @@ open Wasm
   pure (action ())
 
 private def sample (backend kind : String) (iterations depth : Nat) : IO Unit := do
-  let nested := Wasm.Fast.DepthWorkloads.kinds.contains kind
+  let nested := Wasm.Execution.DepthWorkloads.kinds.contains kind
   let input ← evaluate fun _ => if nested then
-    Wasm.Fast.DepthWorkloads.configuration kind iterations depth
-    else Wasm.Fast.Workloads.configuration kind iterations
-  let fuel := if nested then Wasm.Fast.DepthWorkloads.fuel iterations depth
-    else Wasm.Fast.Workloads.fuel kind iterations
-  let expected := if nested then Wasm.Fast.DepthWorkloads.expected kind iterations
-    else RunStatus.finished (Wasm.Fast.Workloads.expected kind iterations)
+    Wasm.Execution.DepthWorkloads.configuration kind iterations depth
+    else Wasm.Execution.Workloads.configuration kind iterations
+  let fuel := if nested then Wasm.Execution.DepthWorkloads.fuel iterations depth
+    else Wasm.Execution.Workloads.fuel kind iterations
+  let expected := if nested then Wasm.Execution.DepthWorkloads.expected kind iterations
+    else RunStatus.finished (Wasm.Execution.Workloads.expected kind iterations)
   let begin ← IO.monoNanosNow
   let machine ← evaluate fun _ =>
-    Wasm.Fast.Machine.ofConfiguration (Wasm.Fast.Configuration.ofSpec input)
+    Wasm.Execution.Machine.ofConfiguration (Wasm.Execution.Configuration.ofSpec input)
   let ready ← IO.monoNanosNow
   let (final, status) ← evaluate fun _ => if backend == "native" then
     let result := Wasm.Native.runMachine fuel machine
     (result.state, result.status)
     else
-      let result := Wasm.Fast.Machine.run fuel machine
+      let result := Wasm.Execution.Machine.run fuel machine
       (result.state, result.status)
   let stop ← IO.monoNanosNow
   let state ← evaluate fun _ => final.toSpec
@@ -45,7 +45,7 @@ def main (args : List String) : IO UInt32 := do
   | [backend, kind, count, nesting] =>
     unless ["certified", "native"].contains backend do
       throw (IO.userError "mode must be certified or native")
-    unless (Wasm.Fast.DepthWorkloads.kinds ++ ["allocate", "allocate-read", "linked",
+    unless (Wasm.Execution.DepthWorkloads.kinds ++ ["allocate", "allocate-read", "linked",
       "read-early", "read-middle", "read-late", "control"]).contains kind do
       throw (IO.userError "unknown workload")
     let some iterations := count.toNat? | throw (IO.userError "invalid iteration count")

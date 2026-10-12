@@ -21,7 +21,7 @@ identify the working tree on top of the pushed explicit-stack milestone `349e4c8
 The original list-heap runner, intermediate heap-only runner, native nested-code scanner and
 native fuel loop have been removed. Public configuration APIs convert at boundaries and retain
 their existing certified soundness/finished/trapped theorem statements. Stateful embedders can
-retain a `Fast.Machine` across runs, including through `Native.runMachine`. Runtime code uses
+retain an `Execution.Machine` across runs, including through `Native.runMachine`. Runtime code uses
 no full configuration reconstruction inside the loop, and releases the input before committing
 a deferred struct update.
 

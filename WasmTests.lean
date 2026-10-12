@@ -1,4 +1,4 @@
-import Wasm.Fast.Tests
+import Wasm.ExecutionTests
 import Wasm.VectorTests
 import Wasm.GCReferenceTests
 import Wasm.TypeAlgorithmTests

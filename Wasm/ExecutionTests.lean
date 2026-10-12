@@ -1,11 +1,11 @@
-import Wasm.Fast.DepthWorkloads
-import Wasm.Fast.MachineExecution
-import Wasm.Fast.Workloads
+import Wasm.DepthWorkloads
+import Wasm.MachineExecution
+import Wasm.Workloads
 import Wasm.Text.Module
 import Wasm.Instantiation
 import Wasm.ExecutableValidationSoundness
 
-namespace Wasm.Fast.Tests
+namespace Wasm.Execution.Tests
 
 private def check (name : String) (ok : Bool) : IO Unit :=
   unless ok do throw (IO.userError s!"fast executor regression: {name}")
@@ -240,12 +240,12 @@ private def fixtures : List (String × String × List Value) := [
         check (name ++ ": five-step run")
           (expected.state.toSpec == actual.state.toSpec && expected.status == actual.status)
 
-#print axioms Wasm.Fast.Store.allocateStruct_toSpec
-#print axioms Wasm.Fast.stepConfiguration_spec
-#print axioms Wasm.Fast.Machine.step_spec
-#print axioms Wasm.Fast.Machine.normalize_same
-#print axioms Wasm.Fast.Machine.run_status_spec
-#print axioms Wasm.Fast.Machine.run_spec
-#print axioms Wasm.Fast.runConfiguration_spec
+#print axioms Wasm.Execution.Store.allocateStruct_toSpec
+#print axioms Wasm.Execution.stepConfiguration_spec
+#print axioms Wasm.Execution.Machine.step_spec
+#print axioms Wasm.Execution.Machine.normalize_same
+#print axioms Wasm.Execution.Machine.run_status_spec
+#print axioms Wasm.Execution.Machine.run_spec
+#print axioms Wasm.Execution.runConfiguration_spec
 
-end Wasm.Fast.Tests
+end Wasm.Execution.Tests
