@@ -1,4 +1,7 @@
+import Wasm.ExecutionCompleteness
+import Wasm.RuntimeValidityTests
 import Wasm.VectorTests
+import Wasm.ExecutionCompletenessAudit
 import Wasm.GCReferenceTests
 import Wasm.TypeAlgorithmTests
 import Wasm.BinaryTests

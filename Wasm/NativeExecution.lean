@@ -4,7 +4,7 @@ import Wasm.NativeFloat
 import Wasm.Instantiation
 
 /-! Optional execution backend with unproved native float arithmetic and spectest host calls.
-The certified `stepConfiguration` and `runConfiguration` APIs are unchanged.
+Native steps fall back to certified execution and propagate its resource-limit classification.
 This backend deliberately provides no `ConfigStep`/`ConfigSteps` soundness theorem. -/
 namespace Wasm.Native
 
@@ -161,16 +161,15 @@ private def runSteps (callDepth : Nat) :
           (output ++ hostOutput config.store config.code)
 
 /-- Native execution records spectest output and limits function activation depth.
-Fuel exhaustion remains distinct from call-stack resource exhaustion. -/
+Fuel exhaustion remains distinct from call-stack and allocation resource exhaustion. -/
 def run (fuel : Nat) (config : Configuration) (callDepth : Nat := 1024) : RunResult :=
   let (final, output, depthExhausted) := runSteps callDepth fuel config []
   let status := if depthExhausted then RunStatus.callStackExhausted else
     match step final with
     | some _ => RunStatus.exhausted
-    | none => match stepOutcome final.frame.module.types final.code with
-      | .finished vs => .finished vs | .trapped => .trapped
-      | .exception address => .exception address
-      | .stuck => .stuck | .next _ => .exhausted
+    | none => match stepConfigurationOutcome final with
+      | .next _ => .exhausted
+      | .stopped status => status
   { state := final, status, output }
 
 structure InstantiationResult where

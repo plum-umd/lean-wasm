@@ -91,6 +91,8 @@ quoted=$(.lake/build/bin/wast tests/quoted-modules.wast)
 printf '%s\n' "$quoted" | rg -q '^tests/quoted-modules.wast: 10 passed, 0 failed, 0 unsupported$'
 exhaustion=$(.lake/build/bin/wast --call-depth 16 --fuel 10000 tests/exhaustion.wast)
 printf '%s\n' "$exhaustion" | rg -q '^tests/exhaustion.wast: 6 passed, 0 failed, 0 unsupported$'
+resources=$(.lake/build/bin/wast tests/resource-limits.wast)
+printf '%s\n' "$resources" | rg -q '^tests/resource-limits.wast: 5 passed, 0 failed, 0 unsupported$'
 typed=$(.lake/build/bin/wast tests/typed-references.wast)
 printf '%s\n' "$typed" | rg -q '^tests/typed-references.wast: 34 passed, 0 failed, 0 unsupported$'
 # Start, direct re-export, nested calls, and indirect host calls print in order.

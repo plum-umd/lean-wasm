@@ -42,7 +42,7 @@ def heapMatches : Nat → Context → HeapType → HeapType → Bool
       | none => false
       | some sub => sub.supers.any fun parent =>
         if parent = b then true else
-          parent.scopedFuel (matchingBudget parent b) ctx.types.length ctx.recs.length &&
+          (checkHeapValid fuel ctx parent).isSome &&
             heapMatches fuel ctx parent b
     | _, _ => false
 
@@ -96,11 +96,11 @@ theorem heapMatches_sound (h : heapMatches fuel ctx a b = true) : HeapMatches ct
       case i31.eq => exact .i31Eq
       case struct_.eq => exact .structEq
       case array.eq => exact .arrayEq
-      case i31.any => exact .trans (middle := .eq) ⟨1, by simp [HeapType.scopedFuel]⟩ .i31Eq .eqAny
+      case i31.any => exact .trans (middle := .eq) (.abstract (by simp)) .i31Eq .eqAny
       case struct_.any =>
-        exact .trans (middle := .eq) ⟨1, by simp [HeapType.scopedFuel]⟩ .structEq .eqAny
+        exact .trans (middle := .eq) (.abstract (by simp)) .structEq .eqAny
       case array.any =>
-        exact .trans (middle := .eq) ⟨1, by simp [HeapType.scopedFuel]⟩ .arrayEq .eqAny
+        exact .trans (middle := .eq) (.abstract (by simp)) .arrayEq .eqAny
       case nofunc.func | nofunc.extern | nofunc.noextern | nofunc.exn |
           nofunc.noexn | nofunc.bot | nofunc.any | nofunc.eq |
           nofunc.i31 | nofunc.struct_ | nofunc.array | nofunc.none |
@@ -183,8 +183,8 @@ theorem heapMatches_sound (h : heapMatches fuel ctx a b = true) : HeapMatches ct
         · rename_i same
           exact .recSuper lookup (same ▸ member)
         · simp only [Bool.and_eq_true] at matched
-          obtain ⟨hscope, success⟩ := matched
-          exact .trans ⟨_, hscope⟩ (.recSuper lookup member) (ih success)
+          obtain ⟨valid, success⟩ := matched
+          exact .trans (checkHeapValid_sound valid) (.recSuper lookup member) (ih success)
 
 theorem valMatches_sound (h : valMatches fuel ctx a b = true) : ValMatches ctx a b := by
   cases a <;> cases b <;> simp only [valMatches, Bool.and_eq_true, Bool.false_eq_true] at h

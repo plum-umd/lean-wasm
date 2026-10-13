@@ -377,9 +377,10 @@ private def command (fuel callDepth : Nat) (state : State) (expr : SExpr) :
   | .list [.atom "assert_exhaustion", action, .string _] =>
     match Wasm.Text.action fuel callDepth state action with
     | .error e => return (state, fromError e)
-    | .ok (next, .callStackExhausted) => return (next, .passed)
+    | .ok (next, .callStackExhausted) | .ok (next, .resourceLimit _) =>
+      return (next, .passed)
     | .ok (next, status) =>
-      return (next, .failed s!"expected call-stack exhaustion, got {repr status}")
+      return (next, .failed s!"expected resource exhaustion, got {repr status}")
   | .list [.atom "assert_trap", action, .string _] =>
     match Wasm.Text.action fuel callDepth state action with
     | .error e => return (state, fromError e)

@@ -9,6 +9,13 @@ Module and store records are explicit projections to the currently modeled entit
 
 namespace Wasm
 
+/-- An implementation limit, distinct from a WebAssembly trap or semantic stuckness. -/
+inductive ResourceLimit where
+  | arrayElements (requested maximum : Nat)
+  deriving BEq, DecidableEq, Repr
+
+
+
 /-- Source function syntax, with uncompressed local declarations and no binary encoding. -/
 structure Func where
   typeIdx : Nat

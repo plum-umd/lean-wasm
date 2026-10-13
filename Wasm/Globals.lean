@@ -1,4 +1,4 @@
-import Wasm.Runtime
+import Wasm.RuntimeMatchingCompleteness
 
 namespace Wasm
 
@@ -62,11 +62,6 @@ inductive GlobalStep : Store → Frame → List AdminInstr → Store → List Ad
 abbrev CheckedGlobalStep (store : Store) (state : Frame) (es : List AdminInstr) :=
   Option { next : Store × List AdminInstr // GlobalStep store state es next.1 next.2 }
 
-private def globalContext (vs : List Value) (tail : List AdminInstr)
-    (s : CheckedGlobalStep store state es) :
-    CheckedGlobalStep store state (values vs ++ es ++ tail) :=
-  s.map fun next => ⟨(next.val.1, values vs ++ next.val.2 ++ tail), .context next.property⟩
-
 def checkedGlobalStep (store : Store) (state : Frame) (es : List AdminInstr) :
     CheckedGlobalStep store state es := by
   match es with
@@ -77,8 +72,8 @@ def checkedGlobalStep (store : Store) (state : Frame) (es : List AdminInstr) :
       match hg : store.global? address with
       | none => exact none
       | some global =>
-        simpa [values] using globalContext [] tail
-          (some ⟨(store, values [global.value]), GlobalStep.get ha hg⟩)
+        exact some ⟨(store, values [global.value] ++ tail), by
+          simpa [values] using GlobalStep.context (vs := []) (tail := tail) (.get ha hg)⟩
   | .instr (.const v) :: .instr (.globalSet x) :: tail =>
     match ha : state.module.globalAddr? x with
     | none => exact none
@@ -89,26 +84,28 @@ def checkedGlobalStep (store : Store) (state : Frame) (es : List AdminInstr) :
         match checkValue store v global.type.valType with
         | none => exact none
         | some proof =>
-          simpa [values] using globalContext [] tail
-            (some ⟨(store.setGlobal address { global with value := v }, []),
-              GlobalStep.set ha hg proof.down⟩)
+          exact some ⟨(store.setGlobal address {global with value := v}, tail), by
+            simpa [values] using GlobalStep.context (vs := []) (tail := tail)
+              (.set ha hg proof.down)⟩
   | .instr (.const v) :: tail =>
-    simpa [values] using globalContext [v] [] (checkedGlobalStep store state tail)
+    exact (checkedGlobalStep store state tail).map fun next =>
+      ⟨(next.val.1, .instr (.const v) :: next.val.2), by
+        simpa [values] using GlobalStep.context (vs := [v]) (tail := []) next.property⟩
   | .label n continuation body :: tail =>
-    let inner : CheckedGlobalStep store state [.label n continuation body] :=
-      (checkedGlobalStep store state body).map fun next =>
-        ⟨(next.val.1, [.label n continuation next.val.2]), .label next.property⟩
-    simpa [values] using globalContext [] tail inner
+    exact (checkedGlobalStep store state body).map fun next =>
+      ⟨(next.val.1, .label n continuation next.val.2 :: tail), by
+        simpa [values] using GlobalStep.context (vs := []) (tail := tail)
+          (.label next.property)⟩
   | .handler catches body :: tail =>
-    let inner : CheckedGlobalStep store state [.handler catches body] :=
-      (checkedGlobalStep store state body).map fun next =>
-        ⟨(next.val.1, [.handler catches next.val.2]), .handler next.property⟩
-    simpa [values] using globalContext [] tail inner
-  | .frame n frame body :: tail =>
-    let inner : CheckedGlobalStep store state [.frame n frame body] :=
-      (checkedGlobalStep store frame body).map fun next =>
-        ⟨(next.val.1, [.frame n frame next.val.2]), .frame next.property⟩
-    simpa [values] using globalContext [] tail inner
+    exact (checkedGlobalStep store state body).map fun next =>
+      ⟨(next.val.1, .handler catches next.val.2 :: tail), by
+        simpa [values] using GlobalStep.context (vs := []) (tail := tail)
+          (.handler next.property)⟩
+  | .frame n inner body :: tail =>
+    exact (checkedGlobalStep store inner body).map fun next =>
+      ⟨(next.val.1, .frame n inner next.val.2 :: tail), by
+        simpa [values] using GlobalStep.context (vs := []) (tail := tail)
+          (.frame next.property)⟩
   | _ => exact none
 termination_by sizeOf es
 decreasing_by all_goals simp_wf; omega
@@ -149,5 +146,133 @@ theorem GlobalInst.valid_set {store : Store} {global : GlobalInst} {value : Valu
     ({ global with value } : GlobalInst).Valid
       (store.setGlobal address { global with value }) :=
   h.store_funcs rfl rfl rfl
+
+/-- Expected global types are valid independently of their current values. -/
+def Store.GlobalTypesValid (store : Store) : Prop :=
+  ∀ global ∈ store.globals, Types.RuntimeValValid {} (Types.embedVal global.type.valType)
+
+private theorem globals_eq (store : Store) (state : Frame) (code : List AdminInstr) :
+    stepGlobals store state code = match code with
+    | .instr (.globalGet x) :: tail => do
+      let address ← state.module.globalAddr? x
+      let global ← store.global? address
+      some (store, values [global.value] ++ tail)
+    | .instr (.const v) :: .instr (.globalSet x) :: tail => do
+      let address ← state.module.globalAddr? x
+      let global ← store.global? address
+      let _ ← checkValue store v global.type.valType
+      some (store.setGlobal address {global with value := v}, tail)
+    | .instr (.const v) :: tail =>
+      (stepGlobals store state tail).map fun next => (next.1, .instr (.const v) :: next.2)
+    | .label n continuation body :: tail =>
+      (stepGlobals store state body).map fun next => (next.1, .label n continuation next.2 :: tail)
+    | .handler catches body :: tail =>
+      (stepGlobals store state body).map fun next => (next.1, .handler catches next.2 :: tail)
+    | .frame n inner body :: tail =>
+      (stepGlobals store inner body).map fun next => (next.1, .frame n inner next.2 :: tail)
+    | _ => none := by
+  cases code with
+  | nil => simp [stepGlobals, checkedGlobalStep]
+  | cons head tail =>
+    cases head with
+    | instr op =>
+      cases op <;> simp only [stepGlobals, checkedGlobalStep, Option.map_map, Function.comp_def]
+      all_goals try rfl
+      · cases tail with
+        | nil => simp only [checkedGlobalStep, Option.map_map, Function.comp_def] <;> rfl
+        | cons second rest =>
+          cases second with
+          | instr op =>
+            cases op <;> simp only [checkedGlobalStep, Option.map_map, Function.comp_def]
+            all_goals try rfl
+            repeat first | split | simp_all [Option.bind]
+          | _ => simp only [checkedGlobalStep, Option.map_map, Function.comp_def] <;> rfl
+      · repeat first | split | simp_all [Option.bind]
+    | _ => simp only [stepGlobals, checkedGlobalStep, Option.map_map, Function.comp_def] <;> rfl
+
+private theorem globals_success_tail
+    (success : stepGlobals store state code = some next) (tail : List AdminInstr) :
+    stepGlobals store state (code ++ tail) = some (next.1, next.2 ++ tail) := by
+  induction code generalizing state next with
+  | nil => rw [globals_eq] at success; contradiction
+  | cons head code ih =>
+    rw [globals_eq] at success ⊢
+    cases head with
+    | instr op =>
+      cases op <;> simp only [List.cons_append] at success ⊢
+      all_goals try contradiction
+      · rename_i value
+        cases code with
+        | nil => simp only [globals_eq, Option.map_none] at success; contradiction
+        | cons second rest =>
+          cases second with
+          | instr op =>
+            cases op <;> simp only [List.cons_append] at success ⊢
+            all_goals first
+              | obtain ⟨inner, found, same⟩ := Option.map_eq_some_iff.mp success
+                subst next
+                have lifted := congrArg
+                  (Option.map (fun pair => (pair.1, .instr (.const value) :: pair.2))) (ih found)
+                simpa only [List.cons_append, Option.map_some] using lifted
+              | simp only [Option.bind_eq_bind] at success ⊢
+                repeat first | split at success | simp_all [Option.bind]
+                all_goals cases success; simp
+          | _ =>
+            obtain ⟨inner, found, same⟩ := Option.map_eq_some_iff.mp success
+            subst next
+            have lifted := congrArg
+              (Option.map (fun pair => (pair.1, .instr (.const value) :: pair.2))) (ih found)
+            simpa only [List.cons_append, Option.map_some] using lifted
+      · repeat first | split at success | simp_all [Option.bind]
+        all_goals cases success; simp [List.append_assoc]
+    | label _ _ _ | handler _ _ | frame _ _ _ =>
+      simp only [List.cons_append] at success ⊢
+      obtain ⟨inner, found, same⟩ := Option.map_eq_some_iff.mp success
+      cases same
+      simp [found]
+    | _ => contradiction
+
+private theorem globals_success_const (success : stepGlobals store state code = some next)
+    (value : Value) : stepGlobals store state (.instr (.const value) :: code) =
+      some (next.1, .instr (.const value) :: next.2) := by
+  cases code with
+  | nil => rw [globals_eq] at success; contradiction
+  | cons head tail =>
+    rw [globals_eq]
+    cases head with
+    | instr op =>
+      cases op <;> simp only
+      all_goals first
+        | rw [success]; rfl
+        | rw [globals_eq] at success; contradiction
+    | _ => simp only; rw [success]; rfl
+
+private theorem globals_success_prefix (success : stepGlobals store state code = some next)
+    (vs : List Value) : stepGlobals store state (values vs ++ code) =
+      some (next.1, values vs ++ next.2) := by
+  induction vs with
+  | nil => simpa [values] using success
+  | cons v vs ih => simpa [values] using globals_success_const ih v
+
+/-- Global reads and writes, in every evaluation context, are recognized exactly. -/
+theorem stepGlobals_complete (step : GlobalStep store state code next code')
+    (valid : store.RuntimeTypesValid) (globals : store.GlobalTypesValid) :
+    stepGlobals store state code = some (next, code') := by
+  induction step with
+  | get ha hg => simp [globals_eq, ha, hg, values]
+  | set ha hg hv =>
+    have success := checkValue_complete valid
+      (globals _ (List.mem_of_getElem? hg)) hv
+    obtain ⟨proof, found⟩ := Option.isSome_iff_exists.mp success
+    simp [globals_eq, ha, hg, found]
+  | context _ ih =>
+    simpa [List.append_assoc] using
+      globals_success_prefix (globals_success_tail (ih valid globals) _) _
+  | label _ ih | handler _ ih | frame _ ih =>
+    rw [globals_eq]
+    simp only [ih valid globals, Option.map_some]
+
+#print axioms stepGlobals_complete
+
 
 end Wasm

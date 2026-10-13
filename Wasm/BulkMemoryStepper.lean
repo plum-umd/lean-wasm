@@ -1,4 +1,5 @@
 import Wasm.BulkMemory
+import Wasm.FamilyScanner
 
 namespace Wasm
 
@@ -55,43 +56,42 @@ private def checkedBulkRedex (store : Store) (state : Frame) (es : List AdminIns
       | some data => exact bulkResult (.drop ha hd)
   | _ => exact none
 
-private def bulkContext (vs : List Value) (tail : List AdminInstr)
-    (s : CheckedBulkStep store state es) :
-    CheckedBulkStep store state (values vs ++ es ++ tail) :=
-  s.map fun next => ⟨(next.val.1, values vs ++ next.val.2 ++ tail), .context next.property⟩
+private def bulkOperands : Frame → AdminInstr → Option Nat
+  | _, .instr (.memoryFill _) | _, .instr (.memoryCopy _ _) | _, .instr (.memoryInit _ _) => some 3
+  | _, .instr (.dataDrop _) => some 0
+  | _, _ => none
 
-def checkedBulkStep (store : Store) (state : Frame) (es : List AdminInstr) :
-    CheckedBulkStep store state es := by
-  match es with
-  | .instr (.const a) :: .instr (.const b) :: .instr (.const c) :: .instr op :: tail =>
-    match checkedBulkRedex store state (values [a, b, c] ++ [.instr op]) with
-    | some next =>
-      simpa [values] using bulkContext [] tail (some next)
-    | none =>
-      simpa [values] using bulkContext [a] []
-        (checkedBulkStep store state (.instr (.const b) :: .instr (.const c) :: .instr op :: tail))
-  | .instr (.dataDrop y) :: tail =>
-    simpa [values] using bulkContext [] tail (checkedBulkRedex store state [.instr (.dataDrop y)])
-  | .instr (.const v) :: tail =>
-    simpa [values] using bulkContext [v] [] (checkedBulkStep store state tail)
-  | .label n continuation body :: tail =>
-    let inner : CheckedBulkStep store state [.label n continuation body] :=
-      (checkedBulkStep store state body).map fun next =>
-        ⟨(next.val.1, [.label n continuation next.val.2]), .label next.property⟩
-    simpa [values] using bulkContext [] tail inner
-  | .handler catches body :: tail =>
-    let inner : CheckedBulkStep store state [.handler catches body] :=
-      (checkedBulkStep store state body).map fun next =>
-        ⟨(next.val.1, [.handler catches next.val.2]), .handler next.property⟩
-    simpa [values] using bulkContext [] tail inner
-  | .frame n frame body :: tail =>
-    let inner : CheckedBulkStep store state [.frame n frame body] :=
-      (checkedBulkStep store frame body).map fun next =>
-        ⟨(next.val.1, [.frame n frame next.val.2]), .frame next.property⟩
-    simpa [values] using bulkContext [] tail inner
-  | _ => exact none
-termination_by sizeOf es
-decreasing_by all_goals simp_wf; omega
+private def bulkScanner : FamilyScanner :=
+  ⟨bulkOperands, fun store state op args =>
+    (checkedBulkRedex store state (values args ++ [op])).map Subtype.val⟩
+
+private theorem bulk_family (step : FamilyStep
+    (fun store state op args next code => BulkStep store state (values args ++ [op]) next code)
+    store state code next code') : BulkStep store state code next code' := by
+  induction step with
+  | redex reduced => exact reduced
+  | context _ ih => exact .context ih
+  | label _ ih => exact .label ih
+  | handler _ ih => exact .handler ih
+  | frame _ ih => exact .frame ih
+
+private theorem bulkScanner_sound (success : bulkScanner.scan store state code [] = some next) :
+    BulkStep store state code next.1 next.2 := by
+  apply bulk_family
+  have localSound : ∀ store state op args next,
+      bulkScanner.reduce store state op args = some next →
+      BulkStep store state (values args ++ [op]) next.1 next.2 := by
+    intro store state op args next found
+    obtain ⟨checked, lookup, same⟩ := Option.map_eq_some_iff.mp found
+    cases same
+    exact checked.property
+  simpa [values] using bulkScanner.scan_sound localSound success
+
+def checkedBulkStep (store : Store) (state : Frame) (code : List AdminInstr) :
+    CheckedBulkStep store state code :=
+  match found : bulkScanner.scan store state code [] with
+  | none => none
+  | some next => some ⟨next, bulkScanner_sound found⟩
 
 def stepBulkMemory (store : Store) (state : Frame) (es : List AdminInstr) :
     Option (Store × List AdminInstr) := (checkedBulkStep store state es).map Subtype.val
@@ -102,5 +102,51 @@ theorem stepBulkMemory_sound (h : stepBulkMemory store state es = some next) :
   cases hs : checkedBulkStep store state es with
   | none => simp [hs] at h
   | some s => simp [hs] at h; subst next; exact s.property
+
+private theorem bulk_redex_complete (reduced : BulkReduces store state code next code') :
+    (checkedBulkRedex store state code).isSome = true := by
+  cases reduced <;> simp only [values, List.map_cons, List.map_nil, List.cons_append,
+    List.nil_append, checkedBulkRedex]
+  all_goals repeat first
+    | simp_all [bulkResult]
+    | split
+
+private def BulkLocal (store : Store) (state : Frame) (op : AdminInstr) (args : List Value)
+    (next : Store) (code : List AdminInstr) : Prop :=
+  op.ScannerAtom ∧ bulkOperands state op = some args.length ∧
+    BulkReduces store state (values args ++ [op]) next code
+
+private theorem BulkStep.toFamily (step : BulkStep store state code next code') :
+    FamilyStep BulkLocal store state code next code' := by
+  induction step with
+  | redex reduced =>
+    cases reduced
+    all_goals first
+      | refine FamilyStep.redex (args := [_, _, _]) (op := .instr _) ?_
+      | refine FamilyStep.redex (args := []) (op := .instr _) ?_
+    all_goals refine ⟨by trivial, rfl, ?_⟩
+    all_goals constructor <;> assumption
+  | context _ ih => exact .context ih
+  | label _ ih => exact .label ih
+  | handler _ ih => exact .handler ih
+  | frame _ ih => exact .frame ih
+
+/-- Bulk memory execution recognizes every semantic reduction in every evaluation context. -/
+theorem stepBulkMemory_complete (reduced : BulkStep store state code next code') :
+    (stepBulkMemory store state code).isSome = true := by
+  have localComplete : ∀ state op args next code, BulkLocal store state op args next code →
+      op.ScannerAtom ∧ bulkScanner.operands state op = some args.length ∧
+        (bulkScanner.reduce store state op args).isSome = true := by
+    intro state op args next code reduced
+    obtain ⟨atom, arity, hr⟩ := reduced
+    exact ⟨atom, arity, by simpa [bulkScanner] using bulk_redex_complete hr⟩
+  have success := bulkScanner.step_complete localComplete reduced.toFamily
+  unfold FamilyScanner.step at success
+  unfold stepBulkMemory checkedBulkStep
+  split <;> rename_i found
+  · simp [found] at success
+  · simp
+
+#print axioms stepBulkMemory_complete
 
 end Wasm

@@ -1,4 +1,5 @@
 import Wasm.Vectors
+import Wasm.FamilyScanner
 
 namespace Wasm
 
@@ -83,41 +84,72 @@ private def vectorContext (vs : List Value) (tail : List AdminInstr)
   checked.map fun next => ⟨(next.val.1, values vs ++ next.val.2 ++ tail),
     .context next.property⟩
 
+private inductive VectorAtom : Store → Frame → VectorOp → List Value →
+    Store → List AdminInstr → Prop where
+  | pure (evaluated : evalVector op args = some value) :
+      VectorAtom store state op args store (values [value])
+  | memory (isMemory : op.opcode.isMemory = true)
+      (evaluated : evalVectorMemory store state op args = some (write, code)) :
+      VectorAtom store state op args (vectorMemoryStore store write) code
+
+private def VectorLocal : FamilyRedex := fun store state instruction args next code =>
+  match instruction with
+  | .instr (.vector op) => VectorAtom store state op args next code
+  | _ => False
+
+private def vectorScanner : FamilyScanner where
+  operands _ instruction := match instruction with
+    | .instr (.vector op) => some op.opcode.signature.params.length
+    | _ => none
+  reduce store state instruction args := match instruction with
+    | .instr (.vector op) => (checkedVectorRedex store state op args).map Subtype.val
+    | _ => none
+
+private theorem FamilyStep.vectors (reduced : FamilyStep VectorLocal store state code next code') :
+    VectorStep store state code next code' := by
+  induction reduced with
+  | @redex _ instruction args _ _ h =>
+    cases instruction <;> simp only [VectorLocal] at h
+    all_goals try contradiction
+    rename_i instr
+    cases instr <;> simp only [VectorLocal] at h
+    all_goals try contradiction
+    cases h with
+    | pure evaluated => exact .redex (.pure evaluated)
+    | memory memory evaluated => exact .redex (.memory memory evaluated)
+  | context _ ih => exact .context ih
+  | label _ ih => exact .label ih
+  | handler _ ih => exact .handler ih
+  | frame _ ih => exact .frame ih
+
+private theorem vectorScanner_sound (found : vectorScanner.scan store state code stack = some next) :
+    VectorStep store state (values stack ++ code) next.1 next.2 := by
+  apply FamilyStep.vectors
+  apply vectorScanner.scan_sound (redex := VectorLocal) ?_ found
+  intro store state instruction args next found
+  cases instruction <;> simp only [vectorScanner] at found
+  all_goals try contradiction
+  rename_i instr
+  cases instr <;> simp only [vectorScanner] at found
+  all_goals try contradiction
+  obtain ⟨checked, found, same⟩ := Option.map_eq_some_iff.mp found
+  cases same
+  simp only [checkedVectorRedex] at found
+  split at found
+  · split at found <;> simp_all
+    simp only [VectorLocal]
+    rw [← found]
+    exact .memory (by assumption) (by assumption)
+  · split at found <;> simp_all
+    simp only [VectorLocal]
+    rw [← found]
+    exact .pure (by assumption)
+
 private def scanVectors (store : Store) (state : Frame) (code : List AdminInstr)
-    (stack : List Value) : CheckedVectorStep store state (values stack ++ code) := by
-  match code with
-  | .instr (.const value) :: tail =>
-    simpa [values, List.map_append, List.append_assoc] using
-      scanVectors store state tail (stack ++ [value])
-  | .instr instr :: tail =>
-    match instr with
-    | .vector op =>
-      let count := op.opcode.signature.params.length
-      if h : count ≤ stack.length then
-        let below := stack.take (stack.length - count)
-        let args := stack.drop (stack.length - count)
-        have split : stack = below ++ args := (List.take_append_drop _ _).symm
-        simpa [split, values, List.map_append, List.append_assoc] using
-          vectorContext below tail (checkedVectorRedex store state op args)
-      else exact none
-    | _ => exact none
-  | .label n continuation body :: tail =>
-    let inner : CheckedVectorStep store state [.label n continuation body] :=
-      (scanVectors store state body []).map fun next =>
-        ⟨(next.val.1, [.label n continuation next.val.2]), .label next.property⟩
-    simpa [values] using vectorContext stack tail inner
-  | .handler catches body :: tail =>
-    let inner : CheckedVectorStep store state [.handler catches body] :=
-      (scanVectors store state body []).map fun next =>
-        ⟨(next.val.1, [.handler catches next.val.2]), .handler next.property⟩
-    simpa [values] using vectorContext stack tail inner
-  | .frame n inner body :: tail =>
-    let checked : CheckedVectorStep store state [.frame n inner body] :=
-      (scanVectors store inner body []).map fun next =>
-        ⟨(next.val.1, [.frame n inner next.val.2]), .frame next.property⟩
-    simpa [values] using vectorContext stack tail checked
-  | _ => exact none
-termination_by sizeOf code
+    (stack : List Value) : CheckedVectorStep store state (values stack ++ code) :=
+  match found : vectorScanner.scan store state code stack with
+  | none => none
+  | some next => some ⟨next, vectorScanner_sound found⟩
 
 def stepVectors (store : Store) (state : Frame) (code : List AdminInstr) :
     Option (Store × List AdminInstr) := (scanVectors store state code []).map Subtype.val
@@ -128,6 +160,51 @@ theorem stepVectors_sound (h : stepVectors store state code = some next) :
   cases hs : scanVectors store state code [] with
   | none => simp [hs] at h
   | some result => simp [hs] at h; subst next; simpa [values] using result.property
+
+private theorem VectorStep.family (reduced : VectorStep store state code next code') :
+    FamilyStep VectorLocal store state code next code' := by
+  induction reduced with
+  | redex h =>
+    cases h with
+    | pure evaluated => exact .redex (.pure evaluated)
+    | memory memory evaluated => exact .redex (.memory memory evaluated)
+  | context _ ih => exact .context ih
+  | label _ ih => exact .label ih
+  | handler _ ih => exact .handler ih
+  | frame _ ih => exact .frame ih
+
+private theorem evalVectorMemory_arity
+    (found : evalVectorMemory store state op args = some output) :
+    args.length = op.opcode.signature.params.length := by
+  by_cases same : args.length = op.opcode.signature.params.length
+  · exact same
+  · simp [evalVectorMemory, same] at found
+
+/-- The SIMD scanner finds any permitted integer, bitwise, or memory successor. -/
+theorem stepVectors_complete (reduced : VectorStep store state code next code') :
+    (stepVectors store state code).isSome = true := by
+  have success : (vectorScanner.step store state code).isSome = true := by
+    apply vectorScanner.step_complete (redex := VectorLocal) ?_ reduced.family
+    intro state instruction args next code reduced
+    cases instruction <;> simp only [VectorLocal] at reduced
+    all_goals try contradiction
+    rename_i instr
+    cases instr <;> simp only [VectorLocal] at reduced
+    all_goals try contradiction
+    refine ⟨by simp [AdminInstr.ScannerAtom], ?_⟩
+    cases reduced with
+    | pure evaluated =>
+      obtain ⟨arity, memory⟩ := evalVector_arity evaluated
+      simp only [vectorScanner, arity, Option.isSome_map, checkedVectorRedex, memory]
+      repeat first | simp_all | split
+    | memory memory evaluated =>
+      have arity := evalVectorMemory_arity evaluated
+      simp only [vectorScanner, arity, Option.isSome_map, checkedVectorRedex, memory]
+      repeat first | simp_all | split
+  simp only [stepVectors, scanVectors, FamilyScanner.step] at *
+  split <;> simp_all
+
+#print axioms stepVectors_complete
 
 theorem VectorStep.resources_preserved (h : VectorStep store state code next code') :
     next.funcs = store.funcs ∧ next.globals = store.globals ∧

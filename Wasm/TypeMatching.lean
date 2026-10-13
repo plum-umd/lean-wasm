@@ -8,10 +8,55 @@ structure Context where
   types : List DefinedType := []
   recs : RecType := []
 
+/-- Unroll a type use in the extended runtime context. -/
+def HeapType.unrollIn? (ctx : Context) : HeapType → Option SubType
+  | .defined group index => (DefinedType.mk group index).unroll?
+  | .typeIdx index => ctx.types[index]?.bind DefinedType.unroll?
+  | .recIdx index => ctx.recs[index]?
+  | _ => Option.none
+
+/-- Recursive parents must precede the current subtype in its group. -/
+def HeapType.Precedes (parent : HeapType) (index : Nat) : Prop :=
+  match parent with
+  | .recIdx i => i < index
+  | _ => True
+
+-- Runtime validity checks parent compatibility, whose matching derivations in turn
+-- require valid intermediate heaps. Define the judgments together.
 mutual
-  inductive HeapMatches (ctx : Context) : HeapType → HeapType → Prop where
+  /-- Runtime heap validity, including validity of rolled recursive declarations.
+  https://webassembly.github.io/spec/core/appendix/properties.html#valid-deftype -/
+  inductive HeapValid : Context → HeapType → Prop where
+    | abstract : heap ∈ [HeapType.func, .nofunc, .extern, .noextern, .exn, .noexn,
+        .bot, .any, .eq, .i31, .struct_, .array, .none] → HeapValid ctx heap
+    | index : ctx.types[i]? = some type → HeapValid ctx (.typeIdx i)
+    | recIndex : ctx.recs[i]? = some sub → HeapValid ctx (.recIdx i)
+    | defined : RuntimeRecValid {ctx with recs := group ++ ctx.recs} group →
+        i < group.length → HeapValid ctx (.defined group i)
+
+  inductive RuntimeValValid : Context → ValType → Prop where
+    | number : type ∈ [ValType.i32, .i64, .f32, .f64, .v128, .bot] →
+        RuntimeValValid ctx type
+    | ref : HeapValid ctx heap → RuntimeValValid ctx (.ref nullable heap)
+
+  inductive RuntimeSubValid : Context → Nat → SubType → Prop where
+    | mk : sub.supers.length ≤ 1 →
+        (∀ type ∈ sub.body.valTypes, RuntimeValValid ctx type) →
+        (∀ parent ∈ sub.supers, RuntimeSuperValid ctx index sub.body parent) →
+        RuntimeSubValid ctx index sub
+
+  inductive RuntimeSuperValid : Context → Nat → CompType → HeapType → Prop where
+    | mk : HeapValid ctx parent → parent.Precedes index →
+        parent.unrollIn? ctx = some unfolded → unfolded.isFinal = false →
+        CompMatches ctx body unfolded.body → RuntimeSuperValid ctx index body parent
+
+  inductive RuntimeRecValid : Context → RecType → Prop where
+    | mk : (∀ entry ∈ group.zipIdx, RuntimeSubValid ctx entry.2 entry.1) →
+        RuntimeRecValid ctx group
+
+  inductive HeapMatches : Context → HeapType → HeapType → Prop where
     | refl : HeapMatches ctx a a
-    | trans : middle.scoped ctx.types.length ctx.recs.length →
+    | trans : HeapValid ctx middle →
         HeapMatches ctx a middle → HeapMatches ctx middle b → HeapMatches ctx a b
     | defined : DefinedMatches ctx a b → HeapMatches ctx a.heap b.heap
     | definedFunc {a : DefinedType} {body : FuncType} :
@@ -39,61 +84,83 @@ mutual
     | bot : HeapMatches ctx .bot a
 
   /-- Identity is equality after closing; structural variance alone does not declare a subtype. -/
-  inductive DefinedMatches (ctx : Context) : DefinedType → DefinedType → Prop where
+  inductive DefinedMatches : Context → DefinedType → DefinedType → Prop where
     | same : a.close? ctx.types = some closed → b.close? ctx.types = some closed →
         DefinedMatches ctx a b
     | super : a.unroll? = some sub → parent ∈ sub.supers →
         HeapMatches ctx parent b.heap → DefinedMatches ctx a b
+
+  inductive RefMatches : Context → RefType → RefType → Prop where
+    | mk : (a.nullable = true → b.nullable = true) → HeapMatches ctx a.heap b.heap →
+        RefMatches ctx a b
+
+  inductive ValMatches : Context → ValType → ValType → Prop where
+    | i32 : ValMatches ctx .i32 .i32
+    | i64 : ValMatches ctx .i64 .i64
+    | f32 : ValMatches ctx .f32 .f32
+    | f64 : ValMatches ctx .f64 .f64
+    | v128 : ValMatches ctx .v128 .v128
+    | ref : RefMatches ctx a b → ValMatches ctx a.val b.val
+    | bot : ValMatches ctx .bot a
+
+  inductive ResultMatches : Context → List ValType → List ValType → Prop where
+    | nil : ResultMatches ctx [] []
+    | cons : ValMatches ctx a b → ResultMatches ctx as bs →
+        ResultMatches ctx (a :: as) (b :: bs)
+
+  /-- Function parameters are contravariant; results are covariant. -/
+  inductive FuncMatches : Context → FuncType → FuncType → Prop where
+    | mk : ResultMatches ctx b.params a.params → ResultMatches ctx a.results b.results →
+        FuncMatches ctx a b
+
+  inductive StorageMatches : Context → StorageType → StorageType → Prop where
+    | val : ValMatches ctx a b → StorageMatches ctx (.val a) (.val b)
+    | i8 : StorageMatches ctx .i8 .i8
+    | i16 : StorageMatches ctx .i16 .i16
+
+  inductive FieldMatches : Context → FieldType → FieldType → Prop where
+    | mk : a.mutable = b.mutable → StorageMatches ctx a.storage b.storage →
+        (a.mutable = true → StorageMatches ctx b.storage a.storage) → FieldMatches ctx a b
+
+  inductive FieldsMatches : Context → List FieldType → List FieldType → Prop where
+    | nil : FieldsMatches ctx fields []
+    | cons : FieldMatches ctx a b → FieldsMatches ctx as bs →
+        FieldsMatches ctx (a :: as) (b :: bs)
+
+  inductive CompMatches : Context → CompType → CompType → Prop where
+    | func : FuncMatches ctx a b → CompMatches ctx (.func a) (.func b)
+    | struct_ : FieldsMatches ctx as bs → CompMatches ctx (.struct_ as) (.struct_ bs)
+    | array : FieldMatches ctx a b → CompMatches ctx (.array a) (.array b)
 end
 
-structure RefMatches (ctx : Context) (a b : RefType) : Prop where
-  nullability : a.nullable = true → b.nullable = true
-  heap : HeapMatches ctx a.heap b.heap
+theorem RefMatches.nullability (h : RefMatches ctx a b) :
+    a.nullable = true → b.nullable = true := by cases h; assumption
 
-inductive ValMatches (ctx : Context) : ValType → ValType → Prop where
-  | i32 : ValMatches ctx .i32 .i32
-  | i64 : ValMatches ctx .i64 .i64
-  | f32 : ValMatches ctx .f32 .f32
-  | f64 : ValMatches ctx .f64 .f64
-  | v128 : ValMatches ctx .v128 .v128
-  | ref : RefMatches ctx a b → ValMatches ctx a.val b.val
-  | bot : ValMatches ctx .bot a
+theorem RefMatches.heap (h : RefMatches ctx a b) : HeapMatches ctx a.heap b.heap := by
+  cases h; assumption
 
-inductive ResultMatches (ctx : Context) : List ValType → List ValType → Prop where
-  | nil : ResultMatches ctx [] []
-  | cons : ValMatches ctx a b → ResultMatches ctx as bs →
-      ResultMatches ctx (a :: as) (b :: bs)
+theorem FuncMatches.params (h : FuncMatches ctx a b) : ResultMatches ctx b.params a.params := by
+  cases h; assumption
 
-/-- Function parameters are contravariant; results are covariant. -/
-structure FuncMatches (ctx : Context) (a b : FuncType) : Prop where
-  params : ResultMatches ctx b.params a.params
-  results : ResultMatches ctx a.results b.results
+theorem FuncMatches.results (h : FuncMatches ctx a b) : ResultMatches ctx a.results b.results := by
+  cases h; assumption
 
-inductive StorageMatches (ctx : Context) : StorageType → StorageType → Prop where
-  | val : ValMatches ctx a b → StorageMatches ctx (.val a) (.val b)
-  | i8 : StorageMatches ctx .i8 .i8
-  | i16 : StorageMatches ctx .i16 .i16
+theorem FieldMatches.mutable (h : FieldMatches ctx a b) : a.mutable = b.mutable := by
+  cases h; assumption
 
-structure FieldMatches (ctx : Context) (a b : FieldType) : Prop where
-  mutable : a.mutable = b.mutable
-  covariant : StorageMatches ctx a.storage b.storage
-  invariant : a.mutable = true → StorageMatches ctx b.storage a.storage
+theorem FieldMatches.covariant (h : FieldMatches ctx a b) :
+    StorageMatches ctx a.storage b.storage := by
+  cases h; assumption
 
-inductive FieldsMatches (ctx : Context) : List FieldType → List FieldType → Prop where
-  | nil : FieldsMatches ctx fields []
-  | cons : FieldMatches ctx a b → FieldsMatches ctx as bs →
-      FieldsMatches ctx (a :: as) (b :: bs)
+theorem FieldMatches.invariant (h : FieldMatches ctx a b) :
+    a.mutable = true → StorageMatches ctx b.storage a.storage := by cases h; assumption
 
-inductive CompMatches (ctx : Context) : CompType → CompType → Prop where
-  | func : FuncMatches ctx a b → CompMatches ctx (.func a) (.func b)
-  | struct_ : FieldsMatches ctx as bs → CompMatches ctx (.struct_ as) (.struct_ bs)
-  | array : FieldMatches ctx a b → CompMatches ctx (.array a) (.array b)
 
 theorem RefMatches.refl (ctx : Context) (a : RefType) : RefMatches ctx a a :=
   ⟨id, .refl⟩
 
 theorem RefMatches.trans (ab : RefMatches ctx a b) (bc : RefMatches ctx b c)
-    (valid : b.heap.scoped ctx.types.length ctx.recs.length) : RefMatches ctx a c :=
+    (valid : HeapValid ctx b.heap) : RefMatches ctx a c :=
   ⟨fun h => bc.nullability (ab.nullability h), .trans valid ab.heap bc.heap⟩
 
 theorem nonNull_matches_nullable (ctx : Context) (heap : HeapType) :

@@ -1,3 +1,4 @@
+import Wasm.VectorStringFacts
 import Wasm.VectorValidation
 
 namespace Wasm
@@ -170,4 +171,104 @@ def evalVector (op : VectorOp) (args : List Value) : Option Value := do
     none
   | _ => none
 
+
+set_option maxRecDepth 10000 in
+set_option maxHeartbeats 2000000 in
+set_option linter.unusedSimpArgs false in
+private theorem evalVector_one_arity (found : evalVector op [argument] = some value) :
+    op.opcode.signature.params.length = 1 ∧ op.opcode.isMemory = false := by
+  cases op with
+  | mk opcode arg lanes memory =>
+    cases opcode <;>
+      dsimp only [VectorOpcode.signature, VectorOpcode.isMemory, VectorOpcode.name,
+        List.length_cons, List.length_nil]
+    all_goals try decide +kernel
+    all_goals simp only [evalVector, VectorProofs.laneWidth_eq] at found
+    all_goals dsimp only [VectorProofs.laneWidth] at found
+    all_goals simp only [VectorProofs.name_split] at found
+    all_goals dsimp only [VectorProofs.nameParts] at found
+    all_goals try dsimp only [VectorOpcode.name] at found
+    all_goals simp only [List.getElem?_cons_zero, List.getElem?_cons_succ,
+      Option.getD_some, List.head!, List.headD] at found
+    all_goals closed_string_tests
+    all_goals simp only [*] at found
+    all_goals simp only [Bool.false_eq_true, Bool.true_eq_false, Bool.or_false,
+      Bool.false_or, Bool.and_false, Bool.false_and, ite_false, ite_true] at found
+    all_goals simp_all [bits128?]
+
+set_option maxRecDepth 10000 in
+set_option maxHeartbeats 2000000 in
+set_option linter.unusedSimpArgs false in
+private theorem evalVector_two_arity (found : evalVector op [left, right] = some value) :
+    op.opcode.signature.params.length = 2 ∧ op.opcode.isMemory = false := by
+  cases op with
+  | mk opcode arg lanes memory =>
+    cases opcode <;>
+      dsimp only [VectorOpcode.signature, VectorOpcode.isMemory, VectorOpcode.name,
+        List.length_cons, List.length_nil]
+    all_goals try decide +kernel
+    all_goals simp only [evalVector, VectorProofs.laneWidth_eq] at found
+    all_goals dsimp only [VectorProofs.laneWidth] at found
+    all_goals simp only [VectorProofs.name_split] at found
+    all_goals dsimp only [VectorProofs.nameParts] at found
+    all_goals try dsimp only [VectorOpcode.name] at found
+    all_goals simp only [List.getElem?_cons_zero, List.getElem?_cons_succ,
+      Option.getD_some, List.head!, List.headD] at found
+    all_goals closed_string_tests
+    all_goals simp only [*] at found
+    all_goals simp only [Bool.false_eq_true, Bool.true_eq_false, Bool.or_false,
+      Bool.false_or, Bool.and_false, Bool.false_and, ite_false, ite_true] at found
+    all_goals simp_all [bits128?, laneBinary, List.range, List.range.loop]
+
+
+set_option maxRecDepth 10000 in
+set_option maxHeartbeats 2000000 in
+set_option linter.unusedSimpArgs false in
+private theorem evalVector_three_arity (found : evalVector op [left, middle, right] = some value) :
+    op.opcode.signature.params.length = 3 ∧ op.opcode.isMemory = false := by
+  cases op with
+  | mk opcode arg lanes memory =>
+    cases opcode <;>
+      dsimp only [VectorOpcode.signature, VectorOpcode.isMemory, VectorOpcode.name,
+        List.length_cons, List.length_nil]
+    all_goals try decide +kernel
+    all_goals simp only [evalVector, VectorProofs.laneWidth_eq] at found
+    all_goals dsimp only [VectorProofs.laneWidth] at found
+    all_goals simp only [VectorProofs.name_split] at found
+    all_goals dsimp only [VectorProofs.nameParts] at found
+    all_goals try dsimp only [VectorOpcode.name] at found
+    all_goals simp only [List.getElem?_cons_zero, List.getElem?_cons_succ,
+      Option.getD_some, List.head!, List.headD] at found
+    all_goals closed_string_tests
+    all_goals simp only [*] at found
+    all_goals simp only [Bool.false_eq_true, Bool.true_eq_false, Bool.or_false,
+      Bool.false_or, Bool.and_false, Bool.false_and, ite_false, ite_true] at found
+    all_goals simp_all [bits128?]
+
+
+/-- Successful SIMD evaluation uses the declared operand arity and a pure opcode. -/
+theorem evalVector_arity (found : evalVector op args = some value) :
+    args.length = op.opcode.signature.params.length ∧ op.opcode.isMemory = false := by
+  cases args with
+  | nil => simp [evalVector] at found
+  | cons a rest =>
+    cases rest with
+    | nil =>
+      obtain ⟨arity, memory⟩ := evalVector_one_arity found
+      exact ⟨by simpa using arity.symm, memory⟩
+    | cons b rest =>
+      cases rest with
+      | nil =>
+        obtain ⟨arity, memory⟩ := evalVector_two_arity found
+        exact ⟨by simpa using arity.symm, memory⟩
+      | cons c rest =>
+        cases rest with
+        | nil =>
+          obtain ⟨arity, memory⟩ := evalVector_three_arity found
+          exact ⟨by simpa using arity.symm, memory⟩
+        | cons d rest => simp [evalVector] at found
+
+#print axioms evalVector_arity
+
+#print axioms evalVector_one_arity
 end Wasm

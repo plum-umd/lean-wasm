@@ -25,46 +25,41 @@ inductive LocalStep : Frame → List AdminInstr → Frame → List AdminInstr �
 abbrev CheckedLocalStep (state : Frame) (es : List AdminInstr) :=
   Option { next : Frame × List AdminInstr // LocalStep state es next.1 next.2 }
 
-private def localContext (vs : List Value) (tail : List AdminInstr)
-    (s : CheckedLocalStep state es) :
-    CheckedLocalStep state (values vs ++ es ++ tail) :=
-  s.map fun next => ⟨(next.val.1, values vs ++ next.val.2 ++ tail), .context next.property⟩
-
 /-- Find a local redex at the active evaluation position, without skipping instructions. -/
 def checkedLocalStep (state : Frame) (es : List AdminInstr) : CheckedLocalStep state es := by
   match es with
   | .instr (.localGet x) :: tail =>
     match h : state.locals[x]? with
-    | some (some v) =>
-      simpa [values] using localContext [] tail
-        (some ⟨(state, values [v]), LocalStep.get h⟩)
+    | some (some v) => exact some ⟨(state, .instr (.const v) :: tail), by
+        simpa [values] using LocalStep.context (vs := []) (tail := tail) (LocalStep.get h)⟩
     | _ => exact none
   | .instr (.const v) :: .instr (.localSet x) :: tail =>
     if h : x < state.locals.length then
-      simpa [values] using localContext [] tail
-        (some ⟨({ state with locals := state.locals.set x (some v) }, []), LocalStep.set h⟩)
+      exact some ⟨({state with locals := state.locals.set x (some v)}, tail), by
+        simpa [values] using LocalStep.context (vs := []) (tail := tail) (LocalStep.set h)⟩
     else exact none
   | .instr (.const v) :: .instr (.localTee x) :: tail =>
-    simpa [values] using localContext [] tail
-      (some ⟨(state, [.instr (.const v), .instr (.const v), .instr (.localSet x)]),
-        LocalStep.tee⟩)
+    exact some ⟨(state, .instr (.const v) :: .instr (.const v) :: .instr (.localSet x) :: tail), by
+      simpa [values] using LocalStep.context (vs := []) (tail := tail) (LocalStep.tee (v := v))⟩
   | .instr (.const v) :: tail =>
-    simpa [values] using localContext [v] [] (checkedLocalStep state tail)
+    exact (checkedLocalStep state tail).map fun next =>
+      ⟨(next.val.1, .instr (.const v) :: next.val.2), by
+        simpa [values] using LocalStep.context (vs := [v]) (tail := []) next.property⟩
   | .label n continuation body :: tail =>
-    let inner : CheckedLocalStep state [.label n continuation body] :=
-      (checkedLocalStep state body).map fun next =>
-      ⟨(next.val.1, [.label n continuation next.val.2]), LocalStep.label next.property⟩
-    simpa [values] using localContext [] tail inner
+    exact (checkedLocalStep state body).map fun next =>
+      ⟨(next.val.1, .label n continuation next.val.2 :: tail), by
+        simpa [values] using LocalStep.context (vs := []) (tail := tail)
+          (LocalStep.label next.property)⟩
   | .handler catches body :: tail =>
-    let inner : CheckedLocalStep state [.handler catches body] :=
-      (checkedLocalStep state body).map fun next =>
-      ⟨(next.val.1, [.handler catches next.val.2]), LocalStep.handler next.property⟩
-    simpa [values] using localContext [] tail inner
-  | .frame n frame body :: tail =>
-    let inner : CheckedLocalStep state [.frame n frame body] :=
-      (checkedLocalStep frame body).map fun next =>
-      ⟨(state, [.frame n next.val.1 next.val.2]), LocalStep.frame next.property⟩
-    simpa [values] using localContext [] tail inner
+    exact (checkedLocalStep state body).map fun next =>
+      ⟨(next.val.1, .handler catches next.val.2 :: tail), by
+        simpa [values] using LocalStep.context (vs := []) (tail := tail)
+          (LocalStep.handler next.property)⟩
+  | .frame n inner body :: tail =>
+    exact (checkedLocalStep inner body).map fun next =>
+      ⟨(state, .frame n next.val.1 next.val.2 :: tail), by
+        simpa [values] using LocalStep.context (vs := []) (tail := tail)
+          (LocalStep.frame next.property)⟩
   | _ => exact none
 termination_by sizeOf es
 decreasing_by all_goals simp_wf; omega
@@ -78,6 +73,130 @@ theorem stepLocals_sound (h : stepLocals state es = some next) :
   cases hs : checkedLocalStep state es with
   | none => simp [hs] at h
   | some s => simp [hs] at h; subst next; exact s.property
+
+private theorem stepLocals_eq (state : Frame) (code : List AdminInstr) :
+    stepLocals state code = match code with
+    | .instr (.localGet x) :: tail =>
+      match state.locals[x]? with
+      | some (some v) => some (state, .instr (.const v) :: tail)
+      | _ => none
+    | .instr (.const v) :: .instr (.localSet x) :: tail =>
+      if x < state.locals.length then
+        some ({state with locals := state.locals.set x (some v)}, tail) else none
+    | .instr (.const v) :: .instr (.localTee x) :: tail =>
+      some (state, .instr (.const v) :: .instr (.const v) :: .instr (.localSet x) :: tail)
+    | .instr (.const v) :: tail =>
+      (stepLocals state tail).map fun next => (next.1, .instr (.const v) :: next.2)
+    | .label n continuation body :: tail =>
+      (stepLocals state body).map fun next => (next.1, .label n continuation next.2 :: tail)
+    | .handler catches body :: tail =>
+      (stepLocals state body).map fun next => (next.1, .handler catches next.2 :: tail)
+    | .frame n inner body :: tail =>
+      (stepLocals inner body).map fun next => (state, .frame n next.1 next.2 :: tail)
+    | _ => none := by
+  cases code with
+  | nil => simp [stepLocals, checkedLocalStep]
+  | cons head tail =>
+    cases head with
+    | instr op =>
+      cases op <;> simp only [stepLocals, checkedLocalStep, Option.map_map, Function.comp_def]
+      all_goals try rfl
+      · cases tail with
+        | nil => simp only [checkedLocalStep, Option.map_map, Function.comp_def] <;> rfl
+        | cons second rest =>
+          cases second with
+          | instr op =>
+            cases op <;> simp only [checkedLocalStep, Option.map_map, Function.comp_def]
+            all_goals try rfl
+            split <;> simp_all
+          | _ => simp only [checkedLocalStep, Option.map_map, Function.comp_def] <;> rfl
+      · split <;> simp_all
+    | _ => simp only [stepLocals, checkedLocalStep, Option.map_map, Function.comp_def] <;> rfl
+
+private theorem local_success_tail
+    (success : stepLocals state code = some next) (tail : List AdminInstr) :
+    stepLocals state (code ++ tail) = some (next.1, next.2 ++ tail) := by
+  induction code generalizing state next with
+  | nil => rw [stepLocals_eq] at success; contradiction
+  | cons head code ih =>
+    rw [stepLocals_eq] at success ⊢
+    cases head with
+    | instr op =>
+      cases op <;> simp only [List.cons_append] at success ⊢
+      all_goals try contradiction
+      · rename_i value
+        cases code with
+        | nil => simp only [stepLocals_eq, Option.map_none] at success; contradiction
+        | cons second rest =>
+          cases second with
+          | instr op =>
+            cases op <;> simp only [List.cons_append] at success ⊢
+            all_goals first
+              | obtain ⟨inner, found, same⟩ := Option.map_eq_some_iff.mp success
+                subst next
+                have lifted := congrArg
+                  (Option.map (fun pair => (pair.1, .instr (.const value) :: pair.2))) (ih found)
+                simpa only [List.cons_append, Option.map_some] using lifted
+              | split at success
+                · simp only [Option.some.injEq] at success
+                  cases success; simp_all
+                · contradiction
+              | cases success; rfl
+          | _ =>
+            simp only [List.cons_append] at success ⊢
+            obtain ⟨inner, found, same⟩ := Option.map_eq_some_iff.mp success
+            subst next
+            have lifted := congrArg
+              (Option.map (fun pair => (pair.1, .instr (.const value) :: pair.2))) (ih found)
+            simpa only [List.cons_append, Option.map_some] using lifted
+      · split at success <;> try simp only [Option.some.injEq] at success
+        all_goals try contradiction
+        cases success; rfl
+    | label _ _ _ | handler _ _ | frame _ _ _ =>
+      simp only [List.cons_append] at success ⊢
+      obtain ⟨inner, found, same⟩ := Option.map_eq_some_iff.mp success
+      cases same
+      simp [found]
+    | _ => contradiction
+
+private theorem local_success_const (success : stepLocals state code = some next) (v : Value) :
+    stepLocals state (.instr (.const v) :: code) =
+      some (next.1, .instr (.const v) :: next.2) := by
+  cases code with
+  | nil => rw [stepLocals_eq] at success; contradiction
+  | cons head tail =>
+    rw [stepLocals_eq]
+    cases head with
+    | instr op =>
+      cases op <;> simp only
+      all_goals first
+        | rw [success]; rfl
+        | rw [stepLocals_eq] at success; contradiction
+    | _ => simp only; rw [success]; rfl
+
+private theorem local_success_prefix (success : stepLocals state code = some next)
+    (vs : List Value) :
+    stepLocals state (values vs ++ code) = some (next.1, values vs ++ next.2) := by
+  induction vs with
+  | nil => simpa [values] using success
+  | cons v vs ih => simpa [values] using local_success_const ih v
+
+/-- Every local reduction, including evaluation contexts, is recognized by the local executor. -/
+theorem stepLocals_complete (h : LocalStep state code state' code') :
+    stepLocals state code = some (state', code') := by
+  induction h with
+  | get lookup => simp [stepLocals_eq, lookup, values]
+  | set bound => simp [stepLocals_eq, bound]
+  | tee => simp [stepLocals_eq]
+  | context _ ih =>
+    simpa [List.append_assoc] using local_success_prefix (local_success_tail ih _) _
+  | label _ ih | handler _ ih | frame _ ih =>
+    rw [stepLocals_eq]
+    simp only [ih, Option.map_some]
+
+/-- Soundness and completeness characterize all successful local steps. -/
+theorem stepLocals_iff : stepLocals state code = some (state', code') ↔
+    LocalStep state code state' code' := ⟨stepLocals_sound, stepLocals_complete⟩
 
 theorem LocalStep.module_preserved (h : LocalStep state es state' es') :
     state'.module = state.module := by

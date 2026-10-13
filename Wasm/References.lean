@@ -1,4 +1,5 @@
-import Wasm.Runtime
+import Wasm.FamilyScanner
+import Wasm.RuntimeMatchingCompleteness
 
 namespace Wasm
 
@@ -205,76 +206,51 @@ private def referenceRedex (store : Store) (state : Frame) (es : List AdminInstr
     | .inconclusive => exact none
   | _ => exact none
 
-private def referenceContext (vs : List Value) (tail : List AdminInstr)
-    (s : CheckedReferenceStep store state es) :
-    CheckedReferenceStep store state (values vs ++ es ++ tail) :=
-  s.map fun next => ⟨values vs ++ next.val ++ tail, .context next.property⟩
+private def referenceOperands : AdminInstr → Option Nat
+  | .instr (.refNull _) | .instr (.refFunc _) => some 0
+  | .instr (.gcReference op) => some op.signature.params.length
+  | .instr (.refTest _ _) | .instr (.refCast _ _) | .instr (.brOnCast _ _ _ _)
+  | .instr .refIsNull | .instr .refAsNonNull | .instr (.brOnNull _)
+  | .instr (.brOnNonNull _) | .castFunc _ | .castDefined _ => some 1
+  | _ => none
 
-def checkedReferenceStep (store : Store) (state : Frame) (es : List AdminInstr) :
-    CheckedReferenceStep store state es := by
-  match es with
-  | .instr (.const (.ref reference)) :: .instr (.refTest nullable heap) :: tail =>
-    simpa [values] using referenceContext [] tail
-      (referenceRedex store state
-        [.instr (.const (.ref reference)), .instr (.refTest nullable heap)])
-  | .instr (.const (.ref reference)) :: .instr (.refCast nullable heap) :: tail =>
-    simpa [values] using referenceContext [] tail
-      (referenceRedex store state
-        [.instr (.const (.ref reference)), .instr (.refCast nullable heap)])
-  | .instr (.const (.ref reference)) :: .instr (.brOnCast fail x source target) :: tail =>
-    simpa [values] using referenceContext [] tail
-      (referenceRedex store state
-        [.instr (.const (.ref reference)), .instr (.brOnCast fail x source target)])
-  | .instr (.const a) :: .instr (.const b) :: .instr (.gcReference .eq) :: tail =>
-    simpa [values] using referenceContext [] tail
-      (referenceRedex store state
-        [.instr (.const a), .instr (.const b), .instr (.gcReference .eq)])
-  | .instr (.const a) :: .instr (.gcReference op) :: tail =>
-    simpa [values] using referenceContext [] tail
-      (referenceRedex store state [.instr (.const a), .instr (.gcReference op)])
-  | .instr (.const (.ref r)) :: .instr .refIsNull :: tail =>
-    simpa [values] using referenceContext [] tail
-      (referenceRedex store state [.instr (.const (.ref r)), .instr .refIsNull])
-  | .instr (.const (.ref r)) :: .instr .refAsNonNull :: tail =>
-    simpa [values] using referenceContext [] tail
-      (referenceRedex store state [.instr (.const (.ref r)), .instr .refAsNonNull])
-  | .instr (.const (.ref r)) :: .instr (.brOnNull x) :: tail =>
-    simpa [values] using referenceContext [] tail
-      (referenceRedex store state [.instr (.const (.ref r)), .instr (.brOnNull x)])
-  | .instr (.const (.ref r)) :: .instr (.brOnNonNull x) :: tail =>
-    simpa [values] using referenceContext [] tail
-      (referenceRedex store state [.instr (.const (.ref r)), .instr (.brOnNonNull x)])
-  | .instr (.const (.ref r)) :: .castFunc ft :: tail =>
-    simpa [values] using referenceContext [] tail
-      (referenceRedex store state [.instr (.const (.ref r)), .castFunc ft])
-  | .instr (.const (.ref r)) :: .castDefined type :: tail =>
-    simpa [values] using referenceContext [] tail
-      (referenceRedex store state [.instr (.const (.ref r)), .castDefined type])
-  | .instr (.refNull kind) :: tail =>
-    simpa [values] using referenceContext [] tail
-      (referenceRedex store state [.instr (.refNull kind)])
-  | .instr (.refFunc x) :: tail =>
-    simpa [values] using referenceContext [] tail (referenceRedex store state [.instr (.refFunc x)])
-  | .instr (.const v) :: tail =>
-    simpa [values] using referenceContext [v] [] (checkedReferenceStep store state tail)
-  | .label n continuation body :: tail =>
-    let inner : CheckedReferenceStep store state [.label n continuation body] :=
-      (checkedReferenceStep store state body).map fun next =>
-        ⟨[.label n continuation next.val], .label next.property⟩
-    simpa [values] using referenceContext [] tail inner
-  | .handler catches body :: tail =>
-    let inner : CheckedReferenceStep store state [.handler catches body] :=
-      (checkedReferenceStep store state body).map fun next =>
-        ⟨[.handler catches next.val], .handler next.property⟩
-    simpa [values] using referenceContext [] tail inner
-  | .frame n frame body :: tail =>
-    let inner : CheckedReferenceStep store state [.frame n frame body] :=
-      (checkedReferenceStep store frame body).map fun next =>
-        ⟨[.frame n frame next.val], .frame next.property⟩
-    simpa [values] using referenceContext [] tail inner
-  | _ => exact none
-termination_by sizeOf es
-decreasing_by all_goals simp_wf; omega
+private def referenceScanner : FamilyScanner where
+  operands := fun _ => referenceOperands
+  reduce := fun store state op args =>
+    (referenceRedex store state (values args ++ [op])).map fun checked => (store, checked.val)
+
+private theorem reference_family (step : FamilyStep
+    (fun store state op args next code => next = store ∧
+      ReferenceStep store state (values args ++ [op]) code) store state code next code') :
+    next = store ∧ ReferenceStep store state code code' := by
+  induction step with
+  | redex h => exact h
+  | context _ ih => exact ⟨ih.1, .context ih.2⟩
+  | label _ ih => exact ⟨ih.1, .label ih.2⟩
+  | handler _ ih => exact ⟨ih.1, .handler ih.2⟩
+  | frame _ ih => exact ⟨ih.1, .frame ih.2⟩
+
+private theorem referenceScanner_sound
+    (found : referenceScanner.scan store state code stack = some next) :
+    next.1 = store ∧ ReferenceStep store state (values stack ++ code) next.2 := by
+  apply reference_family
+  apply referenceScanner.scan_sound (redex := fun store state op args next code =>
+    next = store ∧ ReferenceStep store state (values args ++ [op]) code) ?_ found
+  intro store state op args result success
+  rcases result with ⟨next, code⟩
+  change (referenceRedex store state (values args ++ [op])).map
+    (fun checked => (store, checked.val)) = some (next, code) at success
+  cases checked : referenceRedex store state (values args ++ [op]) with
+  | none => simp [checked] at success
+  | some proof =>
+    simp only [checked, Option.map_some, Option.some.injEq, Prod.mk.injEq] at success
+    exact ⟨success.1.symm, success.2 ▸ proof.property⟩
+
+def checkedReferenceStep (store : Store) (state : Frame) (code : List AdminInstr) :
+    CheckedReferenceStep store state code :=
+  match found : referenceScanner.scan store state code [] with
+  | none => none
+  | some next => some ⟨next.2, by simpa [values] using (referenceScanner_sound found).2⟩
 
 def stepReferences (store : Store) (state : Frame) (es : List AdminInstr) :
     Option (List AdminInstr) := (checkedReferenceStep store state es).map Subtype.val
@@ -285,5 +261,102 @@ theorem stepReferences_sound (h : stepReferences store state es = some next) :
   cases hs : checkedReferenceStep store state es with
   | none => simp [hs] at h
   | some s => simp [hs] at h; subst next; exact s.property
+
+/-- Validity of a cast/test target is independent of the search performed on its operand. -/
+def ReferenceExpectedTypesValid (state : Frame) : AdminInstr → Prop
+  | .instr (.refTest _ heap) | .instr (.refCast _ heap) =>
+      ∀ closed, heap.close? state.module.definedTypes = some closed → Types.HeapValid {} closed
+  | .instr (.brOnCast _ _ _ target) =>
+      ∀ closed, target.heap.close? state.module.definedTypes = some closed → Types.HeapValid {} closed
+  | .castFunc type => Types.HeapValid {} type.definedType.heap
+  | .castDefined type => Types.HeapValid {} type.heap
+  | _ => True
+
+private theorem reference_target_valid (valid : Types.HeapValid {} heap) (nullable : Bool) :
+    Types.RuntimeValValid {} (Types.embedVal (if nullable then .ref heap else .refNonNull heap)) := by
+  cases nullable <;> exact .ref valid
+
+private theorem reference_raw_complete (reduced : ReferenceReduces store state code code')
+    (valid : store.RuntimeTypesValid)
+    (targets : CodeScopedValid ReferenceExpectedTypesValid state code) :
+    (referenceRedex store state code).isSome = true := by
+  cases reduced
+  all_goals simp [CodeScopedValid, AdminInstr.ScopedValid, ReferenceExpectedTypesValid,
+    values] at targets
+  case' testYes closedType matched =>
+    obtain ⟨proof, found⟩ := searchValue_complete valid
+      (reference_target_valid (targets _ closedType) _) matched
+  case' castSource closedType matched =>
+    obtain ⟨proof, found⟩ := searchValue_complete valid
+      (reference_target_valid (targets _ closedType) _) matched
+  case' brCastYes closedType matched =>
+    obtain ⟨proof, found⟩ := searchValue_complete valid
+      (reference_target_valid (targets _ closedType) _) matched
+  case' castLegacy matched =>
+    obtain ⟨proof, found⟩ := searchValue_complete (type := .ref _) valid (.ref targets) matched
+  case' castDefined matched =>
+    obtain ⟨proof, found⟩ := searchValue_complete (type := .ref _) valid (.ref targets) matched
+  case gc evaluated =>
+    unfold evalGCReference at evaluated
+    split at evaluated <;> simp_all [referenceRedex, values, evalGCReference]
+  all_goals simp only [referenceRedex]
+  all_goals repeat first | simp_all [Types.Search.isRejected] | split
+  all_goals subst_vars
+  all_goals repeat first | simp_all | split
+
+private theorem gc_reference_arity (evaluated : evalGCReference op args = some code) :
+    args.length = op.signature.params.length := by
+  unfold evalGCReference at evaluated
+  split at evaluated <;> simp_all [GCReferenceOp.signature]
+
+private def ReferenceLocal (store : Store) (state : Frame) (op : AdminInstr)
+    (args : List Value) (next : Store) (code : List AdminInstr) : Prop :=
+  op.ScannerAtom ∧ referenceOperands op = some args.length ∧ next = store ∧
+    ReferenceReduces store state (values args ++ [op]) code
+
+private theorem ReferenceStep.toFamily (reduced : ReferenceStep store state code code') :
+    FamilyStep ReferenceLocal store state code store code' := by
+  induction reduced with
+  | redex reduced =>
+    cases reduced
+    case gc evaluated =>
+      refine FamilyStep.redex ⟨by trivial, ?_, rfl, .gc evaluated⟩
+      simp [referenceOperands, gc_reference_arity evaluated]
+    all_goals first
+      | refine FamilyStep.redex (op := .instr _) (args := []) ?_
+      | refine FamilyStep.redex (op := .instr _) (args := [_]) ?_
+      | refine FamilyStep.redex (op := .instr _) ?_
+      | refine FamilyStep.redex (op := .castFunc _) (args := [_]) ?_
+      | refine FamilyStep.redex (op := .castDefined _) (args := [_]) ?_
+    all_goals refine ⟨by trivial, ?_, rfl, ?_⟩
+    all_goals first | rfl | (constructor <;> assumption)
+  | context _ ih => exact .context ih
+  | label _ ih => exact .label ih
+  | handler _ ih => exact .handler ih
+  | frame _ ih => exact .frame ih
+
+/-- Reference scanning is complete when its written target types are valid in their frames. -/
+theorem stepReferences_complete (reduced : ReferenceStep store state code code')
+    (valid : store.RuntimeTypesValid)
+    (targets : CodeScopedValid ReferenceExpectedTypesValid state code) :
+    (stepReferences store state code).isSome = true := by
+  have success := referenceScanner.step_complete_scoped (redex := ReferenceLocal)
+    (domain := ReferenceExpectedTypesValid) ?_ (fun _ _ _ _ _ h => h.1)
+    reduced.toFamily targets
+  · unfold stepReferences checkedReferenceStep
+    change (referenceScanner.scan store state code []).isSome = true at success
+    split <;> simp_all
+  · intro state op args next code ready localStep
+    refine ⟨localStep.1, localStep.2.1, ?_⟩
+    have targetValid : CodeScopedValid ReferenceExpectedTypesValid state (values args ++ [op]) := by
+      simp only [codeScopedValid_append, codeScopedValid_singleton]
+      refine ⟨?_, ?_⟩
+      · simp [CodeScopedValid, values, AdminInstr.ScopedValid, ReferenceExpectedTypesValid]
+      · rw [localStep.1.scopedValid_eq]
+        exact ready
+    have found := reference_raw_complete localStep.2.2.2 valid targetValid
+    simpa [referenceScanner] using found
+
+#print axioms stepReferences_complete
 
 end Wasm

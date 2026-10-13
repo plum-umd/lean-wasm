@@ -1,4 +1,5 @@
 import Wasm.Memory
+import Wasm.FamilyScanner
 
 namespace Wasm
 
@@ -51,51 +52,52 @@ private def checkedMemoryRedex (store : Store) (state : Frame) (es : List AdminI
         match hg : memory.grow? delta with
         | none => exact memoryResult ha hm rfl (.growFail hn)
         | some next =>
-          obtain ⟨hcan, he⟩ := MemoryInst.grow?_sound hg
-          subst next
-          exact memoryResult ha hm rfl (.grow hn hcan)
+          exact some ⟨(store.applyMemory address (some next),
+            values [Value.ofNat memory.type.addrType memory.pages]), by
+              obtain ⟨hcan, he⟩ := MemoryInst.grow?_sound hg
+              subst next
+              exact .access ha hm rfl (.grow (x := x) hn hcan)⟩
   | _ => exact none
 
-private def memoryContext (vs : List Value) (tail : List AdminInstr)
-    (s : CheckedMemoryStep store state es) :
-    CheckedMemoryStep store state (values vs ++ es ++ tail) :=
-  s.map fun next => ⟨(next.val.1, values vs ++ next.val.2 ++ tail), .context next.property⟩
+private def memoryOperands : Frame → AdminInstr → Option Nat
+  | _, .instr (.load _ _ _) | _, .instr (.memoryGrow _) => some 1
+  | _, .instr (.store _ _ _) => some 2
+  | _, .instr (.memorySize _) => some 0
+  | _, _ => none
 
-def checkedMemoryStep (store : Store) (state : Frame) (es : List AdminInstr) :
-    CheckedMemoryStep store state es := by
-  match es with
-  | .instr (.const a) :: .instr (.const v) :: .instr (.store op x arg) :: tail =>
-    simpa [values] using memoryContext [] tail
-      (checkedMemoryRedex store state [.instr (.const a), .instr (.const v), .instr (.store op x arg)])
-  | .instr (.const a) :: .instr (.load op x arg) :: tail =>
-    simpa [values] using memoryContext [] tail
-      (checkedMemoryRedex store state [.instr (.const a), .instr (.load op x arg)])
-  | .instr (.const v) :: .instr (.memoryGrow x) :: tail =>
-    simpa [values] using memoryContext [] tail
-      (checkedMemoryRedex store state [.instr (.const v), .instr (.memoryGrow x)])
-  | .instr (.memorySize x) :: tail =>
-    simpa [values] using memoryContext [] tail
-      (checkedMemoryRedex store state [.instr (.memorySize x)])
-  | .instr (.const v) :: tail =>
-    simpa [values] using memoryContext [v] [] (checkedMemoryStep store state tail)
-  | .label n continuation body :: tail =>
-    let inner : CheckedMemoryStep store state [.label n continuation body] :=
-      (checkedMemoryStep store state body).map fun next =>
-        ⟨(next.val.1, [.label n continuation next.val.2]), .label next.property⟩
-    simpa [values] using memoryContext [] tail inner
-  | .handler catches body :: tail =>
-    let inner : CheckedMemoryStep store state [.handler catches body] :=
-      (checkedMemoryStep store state body).map fun next =>
-        ⟨(next.val.1, [.handler catches next.val.2]), .handler next.property⟩
-    simpa [values] using memoryContext [] tail inner
-  | .frame n frame body :: tail =>
-    let inner : CheckedMemoryStep store state [.frame n frame body] :=
-      (checkedMemoryStep store frame body).map fun next =>
-        ⟨(next.val.1, [.frame n frame next.val.2]), .frame next.property⟩
-    simpa [values] using memoryContext [] tail inner
-  | _ => exact none
-termination_by sizeOf es
-decreasing_by all_goals simp_wf; omega
+private def memoryScanner : FamilyScanner :=
+  ⟨memoryOperands, fun store state op args =>
+    (checkedMemoryRedex store state (values args ++ [op])).map Subtype.val⟩
+
+private theorem memory_family (step : FamilyStep
+    (fun store state op args next code =>
+      MemoryStep store state (values args ++ [op]) next code) store state code next code') :
+    MemoryStep store state code next code' := by
+  induction step with
+  | redex reduced => exact reduced
+  | context _ ih => exact .context ih
+  | label _ ih => exact .label ih
+  | handler _ ih => exact .handler ih
+  | frame _ ih => exact .frame ih
+
+private theorem memoryScanner_sound (success : memoryScanner.scan store state code [] = some next) :
+    MemoryStep store state code next.1 next.2 := by
+  apply memory_family
+  have localSound : ∀ store state op args next,
+      memoryScanner.reduce store state op args = some next →
+      MemoryStep store state (values args ++ [op]) next.1 next.2 := by
+    intro store state op args next found
+    obtain ⟨checked, lookup, same⟩ := Option.map_eq_some_iff.mp found
+    cases same
+    exact checked.property
+  simpa [values] using memoryScanner.scan_sound localSound success
+
+/-- The shared scanner carries the same certified memory-family result. -/
+def checkedMemoryStep (store : Store) (state : Frame) (code : List AdminInstr) :
+    CheckedMemoryStep store state code :=
+  match found : memoryScanner.scan store state code [] with
+  | none => none
+  | some next => some ⟨next, memoryScanner_sound found⟩
 
 def stepMemory (store : Store) (state : Frame) (es : List AdminInstr) :
     Option (Store × List AdminInstr) :=
@@ -107,5 +109,82 @@ theorem stepMemory_sound (h : stepMemory store state es = some next) :
   cases hs : checkedMemoryStep store state es with
   | none => simp [hs] at h
   | some s => simp [hs] at h; subst next; exact s.property
+
+private theorem memory_redex_complete
+    (ha : state.module.memAddr? x = some address) (hm : store.mem? address = some memory)
+    (hi : memoryIndex? code = some x) (reduced : MemoryReduces memory code change code') :
+    (checkedMemoryRedex store state code).isSome = true := by
+  cases reduced <;> simp only [memoryIndex?, Option.some.injEq] at hi
+  all_goals subst x
+  all_goals simp only [checkedMemoryRedex, withMemory]
+  all_goals split <;> rename_i lookup
+  all_goals have known := lookup
+  all_goals simp only [ha, Option.some.injEq, reduceCtorEq] at known
+  all_goals try contradiction
+  all_goals subst_vars
+  all_goals split <;> rename_i lookup
+  all_goals have known := lookup
+  all_goals simp only [hm, Option.some.injEq, reduceCtorEq] at known
+  all_goals try contradiction
+  all_goals subst_vars
+  all_goals simp_all only [memoryResult, Option.isSome_some]
+  all_goals repeat first
+    | (split <;> rename_i lookup)
+    | simp_all
+
+private def MemoryLocal (store : Store) (state : Frame) (op : AdminInstr) (args : List Value)
+    (next : Store) (code : List AdminInstr) : Prop :=
+  op.ScannerAtom ∧ memoryOperands state op = some args.length ∧
+    ∃ x address memory change, state.module.memAddr? x = some address ∧
+      store.mem? address = some memory ∧ memoryIndex? (values args ++ [op]) = some x ∧
+      MemoryReduces memory (values args ++ [op]) change code ∧
+      next = store.applyMemory address change
+
+private theorem memory_family_one
+    (localStep : MemoryLocal store state op [a] next code) :
+    FamilyStep MemoryLocal store state [.instr (.const a), op] next code := by
+  simpa [values] using FamilyStep.redex localStep
+
+private theorem memory_family_two
+    (localStep : MemoryLocal store state op [a, b] next code) :
+    FamilyStep MemoryLocal store state [.instr (.const a), .instr (.const b), op] next code := by
+  simpa [values] using FamilyStep.redex localStep
+
+private theorem memory_family_zero
+    (localStep : MemoryLocal store state op [] next code) :
+    FamilyStep MemoryLocal store state [op] next code := by
+  simpa [values] using FamilyStep.redex localStep
+
+private theorem MemoryStep.toFamily (step : MemoryStep store state code next code') :
+    FamilyStep MemoryLocal store state code next code' := by
+  induction step with
+  | access ha hm hi reduced =>
+    cases reduced
+    all_goals first | apply memory_family_one | apply memory_family_two | apply memory_family_zero
+    all_goals refine ⟨by trivial, rfl, _, _, _, _, ha, hm, hi, ?_, rfl⟩
+    all_goals constructor <;> assumption
+  | context _ ih => exact .context ih
+  | label _ ih => exact .label ih
+  | handler _ ih => exact .handler ih
+  | frame _ ih => exact .frame ih
+
+/-- Memory execution is progress-complete, including the permitted growth-failure alternative. -/
+theorem stepMemory_complete (reduced : MemoryStep store state code next code') :
+    (stepMemory store state code).isSome = true := by
+  have localComplete : ∀ state op args next code, MemoryLocal store state op args next code →
+      op.ScannerAtom ∧ memoryScanner.operands state op = some args.length ∧
+        (memoryScanner.reduce store state op args).isSome = true := by
+    intro state op args next code reduced
+    obtain ⟨atom, arity, x, address, memory, change, ha, hm, hi, hr, same⟩ := reduced
+    exact ⟨atom, arity, by
+      simpa [memoryScanner] using memory_redex_complete ha hm hi hr⟩
+  have success := memoryScanner.step_complete localComplete reduced.toFamily
+  unfold FamilyScanner.step at success
+  unfold stepMemory checkedMemoryStep
+  split <;> rename_i found
+  · simp [found] at success
+  · simp
+
+#print axioms stepMemory_complete
 
 end Wasm

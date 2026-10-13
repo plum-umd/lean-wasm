@@ -1,4 +1,6 @@
 import Wasm.Tables
+import Wasm.FamilyScanner
+import Wasm.RuntimeMatchingCompleteness
 
 namespace Wasm
 
@@ -100,59 +102,44 @@ private def checkedTableRedex (store : Store) (state : Frame) (es : List AdminIn
       | some element => exact tableResult (.drop ha hd)
   | _ => exact none
 
-private def tableContext (vs : List Value) (tail : List AdminInstr)
-    (s : CheckedTableStep store state es) :
-    CheckedTableStep store state (values vs ++ es ++ tail) :=
-  s.map fun next => ⟨(next.val.1, values vs ++ next.val.2 ++ tail), .context next.property⟩
+private def tableOperands : Frame → AdminInstr → Option Nat
+  | _, .instr (.tableGet _) => some 1
+  | _, .instr (.tableSet _) | _, .instr (.tableGrow _) => some 2
+  | _, .instr (.tableFill _) | _, .instr (.tableCopy _ _) | _, .instr (.tableInit _ _) => some 3
+  | _, .instr (.tableSize _) | _, .instr (.elemDrop _) => some 0
+  | _, _ => none
 
-def checkedTableStep (store : Store) (state : Frame) (es : List AdminInstr) :
-    CheckedTableStep store state es := by
-  match es with
-  | .instr (.const a) :: .instr (.const b) :: .instr (.const c) :: .instr op :: tail =>
-    match checkedTableRedex store state (values [a, b, c] ++ [.instr op]) with
-    | some next =>
-      simpa [values] using tableContext [] tail (some next)
-    | none =>
-      simpa [values] using tableContext [a] []
-        (checkedTableStep store state (.instr (.const b) :: .instr (.const c) :: .instr op :: tail))
-  | .instr (.const a) :: .instr (.const b) :: .instr op :: tail =>
-    match checkedTableRedex store state (values [a, b] ++ [.instr op]) with
-    | some next => simpa [values] using tableContext [] tail (some next)
-    | none =>
-      simpa [values] using tableContext [a] []
-        (checkedTableStep store state (.instr (.const b) :: .instr op :: tail))
-  | .instr (.const a) :: .instr op :: tail =>
-    match checkedTableRedex store state (values [a] ++ [.instr op]) with
-    | some next => simpa [values] using tableContext [] tail (some next)
-    | none =>
-      simpa [values] using tableContext [a] []
-        (checkedTableStep store state (.instr op :: tail))
-  | .instr (.tableSize x) :: tail =>
-    simpa [values] using tableContext [] tail
-      (checkedTableRedex store state [.instr (.tableSize x)])
-  | .instr (.elemDrop y) :: tail =>
-    simpa [values] using tableContext [] tail
-      (checkedTableRedex store state [.instr (.elemDrop y)])
-  | .instr (.const v) :: tail =>
-    simpa [values] using tableContext [v] [] (checkedTableStep store state tail)
-  | .label n continuation body :: tail =>
-    let inner : CheckedTableStep store state [.label n continuation body] :=
-      (checkedTableStep store state body).map fun next =>
-        ⟨(next.val.1, [.label n continuation next.val.2]), .label next.property⟩
-    simpa [values] using tableContext [] tail inner
-  | .handler catches body :: tail =>
-    let inner : CheckedTableStep store state [.handler catches body] :=
-      (checkedTableStep store state body).map fun next =>
-        ⟨(next.val.1, [.handler catches next.val.2]), .handler next.property⟩
-    simpa [values] using tableContext [] tail inner
-  | .frame n frame body :: tail =>
-    let inner : CheckedTableStep store state [.frame n frame body] :=
-      (checkedTableStep store frame body).map fun next =>
-        ⟨(next.val.1, [.frame n frame next.val.2]), .frame next.property⟩
-    simpa [values] using tableContext [] tail inner
-  | _ => exact none
-termination_by sizeOf es
-decreasing_by all_goals simp_wf; omega
+private def tableScanner : FamilyScanner :=
+  ⟨tableOperands, fun store state op args =>
+    (checkedTableRedex store state (values args ++ [op])).map Subtype.val⟩
+
+private theorem table_family (step : FamilyStep
+    (fun store state op args next code => TableStep store state (values args ++ [op]) next code)
+    store state code next code') : TableStep store state code next code' := by
+  induction step with
+  | redex reduced => exact reduced
+  | context _ ih => exact .context ih
+  | label _ ih => exact .label ih
+  | handler _ ih => exact .handler ih
+  | frame _ ih => exact .frame ih
+
+private theorem tableScanner_sound (success : tableScanner.scan store state code [] = some next) :
+    TableStep store state code next.1 next.2 := by
+  apply table_family
+  have localSound : ∀ store state op args next,
+      tableScanner.reduce store state op args = some next →
+      TableStep store state (values args ++ [op]) next.1 next.2 := by
+    intro store state op args next found
+    obtain ⟨checked, lookup, same⟩ := Option.map_eq_some_iff.mp found
+    cases same
+    exact checked.property
+  simpa [values] using tableScanner.scan_sound localSound success
+
+def checkedTableStep (store : Store) (state : Frame) (code : List AdminInstr) :
+    CheckedTableStep store state code :=
+  match found : tableScanner.scan store state code [] with
+  | none => none
+  | some next => some ⟨next, tableScanner_sound found⟩
 
 def stepTables (store : Store) (state : Frame) (es : List AdminInstr) :
     Option (Store × List AdminInstr) := (checkedTableStep store state es).map Subtype.val
@@ -163,5 +150,81 @@ theorem stepTables_sound (h : stepTables store state es = some next) :
   cases hs : checkedTableStep store state es with
   | none => simp [hs] at h
   | some s => simp [hs] at h; subst next; exact s.property
+
+/-- Table reference types are valid independently of the elements currently stored in the table. -/
+def Store.TableTypesValid (store : Store) : Prop :=
+  ∀ table ∈ store.tables, Types.RuntimeValValid {} (Types.embedVal table.type.refType)
+
+private theorem resolved_table_mem {store : Store} {module : ModuleInst} {x : Nat}
+    {table : TableInst} (lookup : store.resolveTable? module x = some table) :
+    table ∈ store.tables := by
+  obtain ⟨address, found, lookup⟩ := Option.bind_eq_some_iff.mp lookup
+  exact List.mem_of_getElem? lookup
+
+private theorem table_redex_complete (reduced : TableReduces store state code next code')
+    (valid : store.RuntimeTypesValid) (tables : store.TableTypesValid) :
+    (checkedTableRedex store state code).isSome = true := by
+  have directChecks {table : TableInst} {value : Value} {address : TableAddr}
+      (lookup : store.table? address = some table) (typed : Typed store value table.type.refType) :=
+    checkValue_complete valid (tables table (List.mem_of_getElem? lookup)) typed
+  have resolvedChecks {table : TableInst} {value : Value} {x : Nat}
+      (lookup : store.resolveTable? state.module x = some table)
+      (typed : Typed store value table.type.refType) :=
+    checkValue_complete valid (tables table (resolved_table_mem lookup)) typed
+  cases reduced
+  case' set ha ht hi hv hb => have valueSuccess := directChecks ht hv
+  case' setTrap ht hi hv hb => have valueSuccess := resolvedChecks ht hv
+  case' grow ha ht hn hv hg => have valueSuccess := directChecks ht hv
+  case' growFailure ht hn hv => have valueSuccess := resolvedChecks ht hv
+  case' fill hm hi hv hn hb => have valueSuccess := resolvedChecks hm hv
+  case' fillTrap hm hi hv hn hb => have valueSuccess := resolvedChecks hm hv
+  all_goals simp only [values, List.map_cons, List.map_nil, List.cons_append,
+    List.nil_append, checkedTableRedex]
+  all_goals repeat first
+    | simp_all [tableResult, Store.resolveTable?]
+    | split
+  all_goals subst_vars
+  all_goals simp_all
+
+private def TableLocal (store : Store) (state : Frame) (op : AdminInstr) (args : List Value)
+    (next : Store) (code : List AdminInstr) : Prop :=
+  op.ScannerAtom ∧ tableOperands state op = some args.length ∧
+    TableReduces store state (values args ++ [op]) next code
+
+private theorem TableStep.toFamily (step : TableStep store state code next code') :
+    FamilyStep TableLocal store state code next code' := by
+  induction step with
+  | redex reduced =>
+    cases reduced
+    all_goals first
+      | refine FamilyStep.redex (args := [_, _, _]) (op := .instr _) ?_
+      | refine FamilyStep.redex (args := [_, _]) (op := .instr _) ?_
+      | refine FamilyStep.redex (args := [_]) (op := .instr _) ?_
+      | refine FamilyStep.redex (args := []) (op := .instr _) ?_
+    all_goals refine ⟨by trivial, rfl, ?_⟩
+    all_goals constructor <;> assumption
+  | context _ ih => exact .context ih
+  | label _ ih => exact .label ih
+  | handler _ ih => exact .handler ih
+  | frame _ ih => exact .frame ih
+
+/-- Table progress is complete on valid runtime types, allowing either growth outcome. -/
+theorem stepTables_complete (reduced : TableStep store state code next code')
+    (valid : store.RuntimeTypesValid) (tables : store.TableTypesValid) :
+    (stepTables store state code).isSome = true := by
+  have localComplete : ∀ state op args next code, TableLocal store state op args next code →
+      op.ScannerAtom ∧ tableScanner.operands state op = some args.length ∧
+        (tableScanner.reduce store state op args).isSome = true := by
+    intro state op args next code reduced
+    obtain ⟨atom, arity, hr⟩ := reduced
+    exact ⟨atom, arity, by simpa [tableScanner] using table_redex_complete hr valid tables⟩
+  have success := tableScanner.step_complete localComplete reduced.toFamily
+  unfold FamilyScanner.step at success
+  unfold stepTables checkedTableStep
+  split <;> rename_i found
+  · simp [found] at success
+  · simp
+
+#print axioms stepTables_complete
 
 end Wasm

@@ -1,5 +1,8 @@
 import Wasm.GCStorage
 import Wasm.StructValidation
+import Wasm.FamilyScanner
+import Wasm.RuntimeMatchingCompleteness
+import Wasm.RuntimeExpectedTypesInvariant
 
 namespace Wasm
 
@@ -157,12 +160,6 @@ private def checkedStructRedex (store : Store) (state : Frame) (instr : Instr)
     | _ => exact none
   | _ => exact none
 
-private def structContext (vs : List Value) (tail : List AdminInstr)
-    (checked : CheckedStructStep store state code) :
-    CheckedStructStep store state (values vs ++ code ++ tail) :=
-  checked.map fun next => ⟨(next.val.1, values vs ++ next.val.2 ++ tail),
-    .context next.property⟩
-
 private def structOperands? (module : ModuleInst) : Instr → Option Nat
   | .structNew x default => if default then some 0 else do
     let .struct_ fields ← module.types[x]? | none
@@ -171,50 +168,53 @@ private def structOperands? (module : ModuleInst) : Instr → Option Nat
   | .structSet _ _ => some 2
   | _ => none
 
-private def scanStructs (store : Store) (state : Frame) (code : List AdminInstr)
-    (stack : List Value) : CheckedStructStep store state (values stack ++ code) := by
-  match code with
-  | .instr (.const value) :: tail =>
-    simpa [values, List.map_append, List.append_assoc] using
-      scanStructs store state tail (stack ++ [value])
-  | .instr instr :: tail =>
-    match structOperands? state.module instr with
-    | none => exact none
-    | some count =>
-      if h : count ≤ stack.length then
-        let below := stack.take (stack.length - count)
-        let args := stack.drop (stack.length - count)
-        have split : stack = below ++ args := (List.take_append_drop _ _).symm
-        simpa [split, values, List.map_append, List.append_assoc] using
-          structContext below tail (checkedStructRedex store state instr args)
-      else exact none
-  | .label n continuation body :: tail =>
-    let inner : CheckedStructStep store state [.label n continuation body] :=
-      (scanStructs store state body []).map fun next =>
-        ⟨(next.val.1, [.label n continuation next.val.2]), .label next.property⟩
-    simpa [values] using structContext stack tail inner
-  | .handler catches body :: tail =>
-    let inner : CheckedStructStep store state [.handler catches body] :=
-      (scanStructs store state body []).map fun next =>
-        ⟨(next.val.1, [.handler catches next.val.2]), .handler next.property⟩
-    simpa [values] using structContext stack tail inner
-  | .frame n inner body :: tail =>
-    let checked : CheckedStructStep store state [.frame n inner body] :=
-      (scanStructs store inner body []).map fun next =>
-        ⟨(next.val.1, [.frame n inner next.val.2]), .frame next.property⟩
-    simpa [values] using structContext stack tail checked
-  | _ => exact none
-termination_by sizeOf code
+private def structScanner : FamilyScanner :=
+  ⟨(fun state op => match op with
+      | .instr instr => structOperands? state.module instr
+      | _ => none),
+    fun store state op args => match op with
+      | .instr instr => (checkedStructRedex store state instr args).map Subtype.val
+      | _ => none⟩
+
+private theorem struct_family (step : FamilyStep
+    (fun store state op args next code => StructStep store state (values args ++ [op]) next code)
+    store state code next code') : StructStep store state code next code' := by
+  induction step with
+  | redex reduced => exact reduced
+  | context _ ih => exact .context ih
+  | label _ ih => exact .label ih
+  | handler _ ih => exact .handler ih
+  | frame _ ih => exact .frame ih
+
+private theorem structScanner_sound (success : structScanner.scan store state code [] = some next) :
+    StructStep store state code next.1 next.2 := by
+  apply struct_family
+  have localSound : ∀ store state op args next,
+      structScanner.reduce store state op args = some next →
+      StructStep store state (values args ++ [op]) next.1 next.2 := by
+    intro store state op args next found
+    cases op <;> simp only [structScanner] at found
+    all_goals try contradiction
+    obtain ⟨checked, lookup, same⟩ := Option.map_eq_some_iff.mp found
+    cases same
+    exact checked.property
+  simpa [values] using structScanner.scan_sound localSound success
+
+private def checkedStructStep (store : Store) (state : Frame) (code : List AdminInstr) :
+    CheckedStructStep store state code :=
+  match found : structScanner.scan store state code [] with
+  | none => none
+  | some next => some ⟨next, structScanner_sound found⟩
 
 def stepStructs (store : Store) (state : Frame) (code : List AdminInstr) :
-    Option (Store × List AdminInstr) := (scanStructs store state code []).map Subtype.val
+    Option (Store × List AdminInstr) := (checkedStructStep store state code).map Subtype.val
 
 theorem stepStructs_sound (h : stepStructs store state code = some next) :
     StructStep store state code next.1 next.2 := by
   unfold stepStructs at h
-  cases hs : scanStructs store state code [] with
+  cases hs : checkedStructStep store state code with
   | none => simp [hs] at h
-  | some result => simp [hs] at h; subst next; simpa [values] using result.property
+  | some result => simp [hs] at h; subst next; exact result.property
 
 theorem StructStep.resources_preserved (h : StructStep store state code next code') :
     next.funcs = store.funcs ∧ next.globals = store.globals ∧ next.mems = store.mems ∧
@@ -222,5 +222,114 @@ theorem StructStep.resources_preserved (h : StructStep store state code next cod
   induction h with
   | redex reduced => cases reduced <;> exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
   | context _ ih | label _ ih | handler _ ih | frame _ ih => exact ih
+
+private theorem struct_new_arity {store : Store} {state : Frame} {index : Nat}
+    {type : Types.DefinedType} {fields : List Types.FieldType} {types : List ValType}
+    {args : List Value} (ready : state.RuntimeTypesReady)
+    (lookup : state.module.definedTypes[index]? = some type)
+    (expanded : type.expandComposite? = some (.struct_ fields))
+    (projected : structFieldTypes fields = some types) (typed : ArgsTyped store args types) :
+    structScanner.operands state (.instr (.structNew index false)) = some args.length := by
+  have static := ready.1.struct_lookup lookup expanded
+  have count := typed.length.trans (structFieldTypes_length projected).symm
+  simp [structScanner, structOperands?, static, count]
+
+private theorem struct_raw_complete (reduced : StructReduces store state code next code')
+    (valid : store.RuntimeTypesValid) (ready : state.RuntimeTypesReady) :
+    (structScanner.step store state code).isSome = true := by
+  cases reduced
+  case' new hf hs hp ha ht =>
+    have arity := struct_new_arity ready ht hf hs ha
+    have argsSuccess := checkArgs_complete valid (ready.struct_values ht hf hs) ha
+    obtain ⟨_, argsFound⟩ := Option.isSome_iff_exists.mp argsSuccess
+    rw [structScanner.step_atom_isSome (by trivial) arity]
+  case' newDefault hf hs hd hp ha ht =>
+    have argsSuccess := checkArgs_complete valid (ready.struct_values ht hf hs) ha
+    obtain ⟨_, argsFound⟩ := Option.isSome_iff_exists.mp argsSuccess
+    change (structScanner.step store state (values [] ++ [.instr (.structNew _ true)])).isSome = true
+    rw [structScanner.step_atom_isSome (by trivial) rfl]
+  case' get hf hs hv hu ho hr ht =>
+    have referenceSuccess := checkValue_complete (type := .ref _) valid (.ref (ready.heap ht)) hr
+    obtain ⟨_, referenceFound⟩ := Option.isSome_iff_exists.mp referenceSuccess
+    change (structScanner.step store state (values [_] ++ [.instr (.structGet _ _ _)])).isSome = true
+    rw [structScanner.step_atom_isSome (by trivial) rfl]
+  case' set hf hs hm hb hv hp ho hr ha ht =>
+    have referenceSuccess := checkValue_complete (type := .ref _) valid (.ref (ready.heap ht)) hr
+    have valueSuccess := checkValue_complete valid (ready.struct_field ht hf hs hv) ha
+    obtain ⟨_, referenceFound⟩ := Option.isSome_iff_exists.mp referenceSuccess
+    obtain ⟨_, valueFound⟩ := Option.isSome_iff_exists.mp valueSuccess
+    change (structScanner.step store state (values [_, _] ++ [.instr (.structSet _ _)])).isSome = true
+    rw [structScanner.step_atom_isSome (by trivial) rfl]
+  case' getNull =>
+    change (structScanner.step store state (values [_] ++ [.instr (.structGet _ _ _)])).isSome = true
+    rw [structScanner.step_atom_isSome (by trivial) rfl]
+  case' setNull =>
+    change (structScanner.step store state (values [_, _] ++ [.instr (.structSet _ _)])).isSome = true
+    rw [structScanner.step_atom_isSome (by trivial) rfl]
+  all_goals simp only [structScanner, Option.isSome_map, checkedStructRedex]
+  all_goals repeat first
+    | simp_all
+    | split
+  all_goals subst_vars
+  all_goals try simp_all
+  all_goals subst_vars
+  all_goals repeat first | simp_all | split
+  all_goals subst_vars
+  all_goals first | simp_all | grind
+
+private def StructLocal (store : Store) (state : Frame) (op : AdminInstr) (args : List Value)
+    (next : Store) (code : List AdminInstr) : Prop :=
+  op.ScannerAtom ∧ structScanner.operands state op = some args.length ∧
+    StructReduces store state (values args ++ [op]) next code
+
+private theorem StructStep.toFamily (step : StructStep store state code next code')
+    (ready : state.RuntimeTypesReady) (frames : CodeFramesValid Frame.RuntimeTypesReady code) :
+    FamilyStep StructLocal store state code next code' := by
+  induction step with
+  | redex reduced =>
+    cases reduced
+    all_goals first
+      | refine FamilyStep.redex (op := .instr _) ?_
+      | refine FamilyStep.redex (args := []) (op := .instr _) ?_
+      | refine FamilyStep.redex (args := [_, _]) (op := .instr _) ?_
+      | refine FamilyStep.redex (args := [_]) (op := .instr _) ?_
+    all_goals refine ⟨by trivial, ?_, ?_⟩
+    all_goals first
+      | rfl
+      | exact struct_new_arity ready (by assumption) (by assumption) (by assumption) (by assumption)
+      | constructor <;> assumption
+  | context _ ih =>
+    simp only [codeFramesValid_append, codeFramesValid_values, true_and] at frames
+    exact .context (ih ready frames.1)
+  | label _ ih | handler _ ih =>
+    simp only [codeFramesValid_singleton, AdminInstr.FramesValid] at frames
+    first | exact .label (ih ready frames) | exact .handler (ih ready frames)
+  | frame _ ih =>
+    simp only [codeFramesValid_singleton, AdminInstr.FramesValid] at frames
+    exact .frame (ih frames.1 frames.2)
+
+/-- Structure execution is complete with valid fields and coherent module projections. -/
+theorem stepStructs_complete (reduced : StructStep store state code next code')
+    (valid : store.RuntimeTypesValid) (ready : state.RuntimeTypesReady)
+    (frames : CodeFramesValid Frame.RuntimeTypesReady code) :
+    (stepStructs store state code).isSome = true := by
+  have localComplete : ∀ state op args next code, state.RuntimeTypesReady →
+      StructLocal store state op args next code → op.ScannerAtom ∧
+        structScanner.operands state op = some args.length ∧
+        (structScanner.reduce store state op args).isSome = true := by
+    intro state op args next code ready reduced
+    obtain ⟨atom, arity, hr⟩ := reduced
+    exact ⟨atom, arity, by
+      rw [← structScanner.step_atom_isSome atom arity]
+      exact struct_raw_complete hr valid ready⟩
+  have success := structScanner.step_complete_on localComplete
+    (reduced.toFamily ready frames) ready frames
+  unfold FamilyScanner.step at success
+  unfold stepStructs checkedStructStep
+  split <;> rename_i found
+  · simp [found] at success
+  · simp
+
+#print axioms stepStructs_complete
 
 end Wasm

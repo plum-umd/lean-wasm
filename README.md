@@ -50,7 +50,7 @@ lake exe wast --fuel 4000000 --call-depth 256 .cache/testsuite/memory_copy64.was
 
 The CLI defaults to 10,000 semantic steps per module/action and 1,024 active function frames.
 The harness supplies per-script limits, including higher fuel for tail-call stress tests.
-Call-stack exhaustion can satisfy `assert_exhaustion`; running out of fuel is a failure.
+Call-stack and allocation exhaustion can satisfy `assert_exhaustion`; fuel exhaustion is a failure.
 Allocation budgets are embedder resource policy, separate from static validation.
 Exit codes are **0** for complete success, **1** for failures, and **2** for unsupported coverage.
 
@@ -96,9 +96,83 @@ result profile rather than enumerating every permitted result.
 
 The implementation manually transcribes the upstream rules. Correspondence to an imported
 specification, parser/decoder correctness, validator rejection correctness/completeness,
-absence-of-step completeness, preservation/progress, and IEEE/native execution proofs remain
-future work. There are no `sorry` proofs or custom correctness axioms; Lean tests print proof
+progress of all validated programs, full typing preservation, and IEEE/native execution proofs
+remain future work. There are no `sorry` proofs or custom correctness axioms; Lean tests print proof
 axiom dependencies.
+
+[The execution completeness audit](Wasm/ExecutionCompletenessAudit.lean) covers all twelve
+configuration-step families. Matching transitivity now requires runtime heap validity,
+including valid rolled recursive declarations, following the Wasm 3.0 specification.
+The former malformed-intermediate witness cannot supply this premise. Malformed stored types
+still demonstrate why a completeness theorem needs a runtime well-formedness invariant.
+
+`stepConfigurationOutcome` distinguishes certified steps from terminal, stuck, and resource
+outcomes. Array allocation beyond the element budget reports
+`RunStatus.resourceLimit (.arrayElements requested maximum)` in both certified and native
+runners, preserving the residual configuration. The legacy `stepConfiguration` API retains
+its `Option` result for existing step proofs. A completeness theorem must account for resource
+outcomes or assume sufficient resources. Memory and table growth already permit failure steps.
+
+[Execution completeness](Wasm/ExecutionCompleteness.lean) now proves resource-aware single-step
+progress for all twelve `ConfigStep` families on the explicit `SupportedFamilyDomain`.
+Every semantic successor yields a certified executor step or an explicit allocation-limit
+outcome. The eleven ordinary families have progress completeness through value prefixes,
+instruction suffixes, labels, handlers, and frames. `step_complete` covers the full pure/control
+scanner, including block/loop entry, branch selection/unwinding, returns, activation exits,
+traps, and local-frame priority, without type-validity hypotheses.
+Array progress additionally permits allocation limits; memory/table growth can choose permitted
+failure steps. `stepConfiguration_none_iff_irreducible` characterizes failed execution when no
+allocation limit is reported. `stepConfigurationOutcome_stopped_complete` proves that a stopped
+classification other than a resource limit has no semantic successor on the domain.
+
+[Runtime type invariants](Wasm/RuntimeTypeInvariant.lean) now state the type-facing store domain
+and agreement between static module projections and runtime type identities without relying on
+executable checks or fuel. Stored functions, structures, arrays, and tags must carry closed,
+valid types of the appropriate kind. Reference lookup, semantic value typing, and argument typing
+then yield valid actual types. The audit proves that this domain excludes the malformed-store
+counterexample.
+
+[Matching completeness](Wasm/MatchingCompleteness.lean) shows how heap-search
+completeness lifts to value matching (including nullability) and
+result-list matching at the same fuel. Numeric matching needs no heap-search fuel. Heap, value,
+and result-list identity succeed with any positive fuel, including recursive types and arbitrarily
+long signatures. [Abstract heap paths](Wasm/AbstractMatchingCompleteness.lean) now normalize
+arbitrary compositions within the abstract hierarchy and succeed with at least two units of fuel.
+[Declared supertype paths](Wasm/DeclaredMatchingCompleteness.lean) of length `n` succeed with
+`n + 1` units of fuel, provided the source and target close successfully at each edge. General
+[matching normalization](Wasm/MatchingNormalization.lean) now removes nested transitivity
+from every heap derivation, producing equivalent primitive-edge paths with valid junctions.
+[Closing normalization](Wasm/ClosingNormalization.lean) proves that closing fixes closed runtime
+types, and [nominal-parent normalization](Wasm/NominalParentNormalization.lean) proves that valid
+runtime definitions have defined parents after unrolling. A direct defined match between closed,
+valid runtime types therefore reduces to identity or a nominal parent followed by a normalized
+path. [Nominal search normalization](Wasm/NominalSearchNormalization.lean) now proves that
+**every** declarative match between defined types with a closed, valid source reduces to a
+searchable declared-supertype chain. The finite parent-tree certificate is derived from declarative
+validity, with recursive parents handled in index order. Consequently, sufficient search fuel
+exists for these matches. General declarative matches starting at abstract upper types also
+normalize to the abstract hierarchy and succeed with two units of fuel.
+[Heap matching completeness](Wasm/HeapMatchingCompleteness.lean) now covers **all** declarative
+matches between valid runtime heaps, including mixed nominal-to-abstract matches and
+hierarchy-bottom sources, at the **unchanged fixed `matchingBudget`**. A weighted parent-tree
+certificate bounds nominal chains, and hierarchy normalization handles the other cases.
+[Runtime matching completeness](Wasm/RuntimeMatchingCompleteness.lean) lifts this result to
+runtime value types, stored values, and argument lists under declarative store and expected-type
+validity. These theorems assume neither successful executable checks nor a separate fuel bound.
+[Runtime invariant preservation](Wasm/RuntimeExecutionInvariant.lean) now covers every
+`ConfigStep` family and arbitrary finite `ConfigSteps`. It preserves stored runtime type
+identities, static/runtime module coherence, valid expected value types in active, nested, and
+invocable modules, and valid expected global/table, function-parameter, and tag-parameter types. Expected composite value types are an
+explicit declarative strengthening in [RuntimeExpectedTypesInvariant](Wasm/RuntimeExpectedTypesInvariant.lean),
+not assumptions that executable checks succeed. Reference scanner completeness separately
+requires valid written cast/test targets in the module of each enclosing frame. Calls likewise
+require valid written reference/defined invocation targets in their enclosing frames.
+[Nominal function shapes](Wasm/RuntimeNominalShape.lean) prove that valid function subtyping
+preserves parameter/result arity, which reconciles requested and actual callee signatures.
+
+Single-step resource-aware completeness is proved on the declared runtime domain.
+Whole object-content/instruction typing
+and preservation of written instruction targets are also outside the invariant proved here.
 
 ## Code organization
 

@@ -173,6 +173,8 @@ private theorem stepWithVectors_sound (h : stepWithVectors config = some next) :
     subst next
     exact .vectors (stepVectors_sound hs)
 
+/-- Legacy step API: `none` also covers resource limits. Use `stepConfigurationOutcome`
+for a classified result. -/
 def stepConfiguration (config : Configuration) : Option Configuration :=
   match stepExceptions config.store config.frame config.code with
   | some next => some {config with store := next.1, code := next.2}
@@ -187,6 +189,72 @@ theorem stepConfiguration_sound (h : stepConfiguration config = some next) :
     simp [he] at h
     subst next
     exact .exceptions (stepExceptions_sound he)
+
+/-- A priority choice can stop only when every instruction-family executor stops. -/
+theorem stepConfiguration_none_iff : stepConfiguration config = none ↔
+    stepExceptions config.store config.frame config.code = none ∧
+    stepVectors config.store config.frame config.code = none ∧
+    stepArrays config.store config.frame config.code = none ∧
+    stepStructs config.store config.frame config.code = none ∧
+    stepReferences config.store config.frame config.code = none ∧
+    stepTables config.store config.frame config.code = none ∧
+    stepLocals config.frame config.code = none ∧
+    stepCalls config.store config.frame config.code = none ∧
+    stepGlobals config.store config.frame config.code = none ∧
+    stepMemory config.store config.frame config.code = none ∧
+    stepBulkMemory config.store config.frame config.code = none ∧
+    step config.frame.module.types config.code = none := by
+  simp only [stepConfiguration, stepWithVectors, stepOrdinaryConfiguration, stepWithStructures,
+    stepWithoutStructures, stepCoreConfiguration]
+  cases stepExceptions config.store config.frame config.code <;> simp
+  cases stepVectors config.store config.frame config.code <;> simp
+  cases stepArrays config.store config.frame config.code <;> simp
+  cases stepStructs config.store config.frame config.code <;> simp
+  cases stepReferences config.store config.frame config.code <;> simp
+  cases stepTables config.store config.frame config.code <;> simp
+  cases stepLocals config.frame config.code <;> simp
+  cases stepCalls config.store config.frame config.code <;> simp
+  cases stepGlobals config.store config.frame config.code <;> simp
+  cases stepMemory config.store config.frame config.code <;> simp
+  cases stepBulkMemory config.store config.frame config.code <;> simp
+
+/-- Local semantics cannot be lost by the configuration executor's family priority. -/
+theorem stepConfiguration_complete_locals (h : LocalStep config.frame config.code frame' code') :
+    ∃ next, stepConfiguration config = some next := by
+  cases success : stepConfiguration config with
+  | some next => exact ⟨next, rfl⟩
+  | none =>
+    have stopped := (stepConfiguration_none_iff.mp success).2.2.2.2.2.2.1
+    rw [stepLocals_complete h] at stopped
+    contradiction
+
+/-- A step attempt can stop at an implementation limit without being semantically stuck. -/
+inductive ConfigurationStepOutcome where
+  | next (config : Configuration)
+  | stopped (status : RunStatus)
+  deriving BEq, Repr
+
+/-- Prefer a certified semantic step; classify resource limits only when stepping stops. -/
+def stepConfigurationOutcome (config : Configuration) : ConfigurationStepOutcome :=
+  match stepConfiguration config with
+  | some next => .next next
+  | none => match arrayResourceLimit? config.store config.frame config.code with
+    | some limit => .stopped (.resourceLimit limit)
+    | none => match stepOutcome config.frame.module.types config.code with
+      | .finished vs => .stopped (.finished vs)
+      | .trapped => .stopped .trapped
+      | .exception address => .stopped (.exception address)
+      | .stuck => .stopped .stuck
+      | .next _ => .stopped .exhausted
+
+theorem stepConfigurationOutcome_sound
+    (h : stepConfigurationOutcome config = .next next) : ConfigStep config next := by
+  unfold stepConfigurationOutcome at h
+  split at h
+  · cases h; exact stepConfiguration_sound (by assumption)
+  · split at h
+    · cases h
+    · split at h <;> cases h
 
 inductive ConfigSteps : Configuration → Configuration → Prop where
   | refl : ConfigSteps config config
@@ -212,13 +280,28 @@ def runConfiguration (fuel : Nat) (config : Configuration) : ConfigurationRunRes
   let final := (checkedConfigRun fuel config).val
   let status := match stepConfiguration final with
     | some _ => RunStatus.exhausted
-    | none => match stepOutcome final.frame.module.types final.code with
-      | .finished vs => .finished vs
-      | .trapped => .trapped
-      | .exception address => .exception address
-      | .stuck => .stuck
-      | .next _ => .exhausted
+    | none => match arrayResourceLimit? final.store final.frame final.code with
+      | some limit => .resourceLimit limit
+      | none => match stepOutcome final.frame.module.types final.code with
+        | .finished vs => .finished vs
+        | .trapped => .trapped
+        | .exception address => .exception address
+        | .stuck => .stuck
+        | .next _ => .exhausted
   ⟨final, status⟩
+
+/-- Stopping (including a resource limit) preserves the current configuration for every fuel. -/
+theorem runConfiguration_stopped_state (h : stepConfiguration config = none) :
+    (runConfiguration fuel config).state = config := by
+  cases fuel with
+  | zero => rfl
+  | succ fuel =>
+    simp only [runConfiguration, checkedConfigRun]
+    split
+    · rfl
+    · rename_i next stepped
+      rw [h] at stepped
+      contradiction
 
 theorem runConfiguration_sound : ConfigSteps config (runConfiguration fuel config).state :=
   (checkedConfigRun fuel config).property
@@ -361,11 +444,12 @@ theorem runConfiguration_finished
   · cases h
   · split at h
     · cases h
-      exact stepOutcome_finished (by assumption)
-    · cases h
-    · cases h
-    · cases h
-    · cases h
+    · split at h
+      · cases h; exact stepOutcome_finished (by assumption)
+      · cases h
+      · cases h
+      · cases h
+      · cases h
 
 theorem runConfiguration_trapped (h : (runConfiguration fuel config).status = .trapped) :
     (runConfiguration fuel config).state.code = [.trap] := by
@@ -374,9 +458,11 @@ theorem runConfiguration_trapped (h : (runConfiguration fuel config).status = .t
   · cases h
   · split at h
     · cases h
-    · exact stepOutcome_trapped (by assumption)
-    · cases h
-    · cases h
-    · cases h
+    · split at h
+      · cases h
+      · exact stepOutcome_trapped (by assumption)
+      · cases h
+      · cases h
+      · cases h
 
 end Wasm

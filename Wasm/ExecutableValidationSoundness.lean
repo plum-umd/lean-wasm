@@ -472,16 +472,20 @@ private theorem validationResult_refl (context : Types.Context) (ts : List Types
 private theorem validationResult_append
     (a : Types.ResultMatches context as bs) (b : Types.ResultMatches context cs ds) :
     Types.ResultMatches context (as ++ cs) (bs ++ ds) := by
-  induction a with
-  | nil => exact b
-  | cons h _ ih => exact .cons h ih
+  induction as generalizing bs with
+  | nil => cases a; exact b
+  | cons _ _ ih =>
+    cases a with
+    | cons head tail => exact .cons head (ih tail)
 
 private theorem validationResult_reverse (h : Types.ResultMatches context as bs) :
     Types.ResultMatches context as.reverse bs.reverse := by
-  induction h with
-  | nil => exact .nil
-  | cons h _ ih =>
-    simpa using validationResult_append ih (Types.ResultMatches.cons h .nil)
+  induction as generalizing bs with
+  | nil => cases h; exact .nil
+  | cons _ _ ih =>
+    cases h with
+    | cons head tail =>
+      simpa using validationResult_append (ih tail) (Types.ResultMatches.cons head .nil)
 
 private theorem popBottom_sound (h : popBottom context dead required stack = some result) :
     stack ++ result.missing = result.actual ++ result.base ∧
