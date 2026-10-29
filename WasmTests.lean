@@ -11,6 +11,7 @@ import Wasm.TypeTests
 import Wasm.TypedRuntimeTests
 import Wasm.TableTests
 import Wasm.RuntimeTests
+import Wasm.HostTests
 import Wasm.LocalTests
 import Wasm.CallTests
 import Wasm.GlobalTests

@@ -76,7 +76,8 @@ and [measured counts](tests/testsuite/expected-broader.txt) record the regressio
 Unsupported assertions never count as passes. Assertion diagnostic strings are not compared.
 
 Proposal, legacy, and custom subdirectory suites are outside this inventory. Shared
-memories/atomics and host environments beyond `spectest` remain unsupported.
+memories/atomics remain unsupported. The `.wast` runner supplies only `spectest`
+hosts; library embedders can service their own [resumable host calls](HOST-CALLS.md).
 
 ## Proof status
 
@@ -110,6 +111,10 @@ axiom dependencies.
 | SIMD | [Vectors](Wasm/Vectors.lean), [VectorStepper](Wasm/VectorStepper.lean), [VectorValidation](Wasm/VectorValidation.lean) |
 | Native arithmetic and hosts | [NativeExecution](Wasm/NativeExecution.lean), [NativeFloat](Wasm/NativeFloat.lean), [NativeVector](Wasm/NativeVector.lean), [Spectest](Wasm/Spectest.lean) |
 | Parsing and scripts | [Text/Module](Wasm/Text/Module.lean), [Binary/Decode](Wasm/Binary/Decode.lean), [Text/Script](Wasm/Text/Script.lean), [CLI](WastMain.lean) |
+
+For pure, certified suspension and resumption at host imports, see
+[resumable host calls](HOST-CALLS.md). The embedding API supports scalar replies
+with an unchanged store, including indirect/reference and tail calls.
 
 Import `Wasm` to use the library. `WasmTests.lean` collects the Lean regressions; `tests/`
 contains focused `.wast` fixtures and upstream coverage metadata. Upstream fixtures are fetched
