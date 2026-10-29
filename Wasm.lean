@@ -18,6 +18,7 @@ import Wasm.Runtime
 import Wasm.GCStorage
 import Wasm.FrameReduction
 import Wasm.Configuration
+import Wasm.Host
 import Wasm.LocalValidation
 import Wasm.CallValidation
 import Wasm.Globals
