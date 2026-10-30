@@ -113,8 +113,9 @@ axiom dependencies.
 | Parsing and scripts | [Text/Module](Wasm/Text/Module.lean), [Binary/Decode](Wasm/Binary/Decode.lean), [Text/Script](Wasm/Text/Script.lean), [CLI](WastMain.lean) |
 
 For pure, certified suspension and resumption at host imports, see
-[resumable host calls](HOST-CALLS.md). The embedding API supports scalar replies
-with an unchanged store, including indirect/reference and tail calls.
+[resumable host calls](HOST-CALLS.md). The embedding API supports scalar replies,
+checked guest-memory reads and atomic byte writes, including indirect/reference
+and tail calls. The original store-preserving reply interface remains available.
 
 Import `Wasm` to use the library. `WasmTests.lean` collects the Lean regressions; `tests/`
 contains focused `.wast` fixtures and upstream coverage metadata. Upstream fixtures are fetched

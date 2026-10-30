@@ -62,6 +62,71 @@ The executable regressions in `Wasm/HostTests.lean` include a nested function
 that receives `42` from its import and returns `43`, with its locals and the
 surrounding operand stack preserved.
 
+## Checked guest-memory access and write replies
+
+Import `Wasm.HostMemory` (also exported by `Wasm`) for checked byte reads and
+transactional byte-write replies. These operations use existing linear memories
+in the current runtime model, which does not model shared memories.
+
+`readHostMemory call memoryIndex offset count` reads from the saved snapshot and
+returns `Except HostMemoryError (Array Byte)`. `memoryIndex` is explicitly
+relative to `call.request.caller.module`, including when a nested function uses a
+different memory mapping from the outer frame. Imported memories and aliases
+resolve through that mapping to their store addresses. The API never assumes
+that the memory is module index 0 or store address 0.
+
+Offsets and lengths are mathematical `Nat` values. The check requires
+`offset + count ≤ memory.bytes.size`, without machine-integer wraparound or
+narrowing to the memory's address width. This works for both memory32 and
+memory64. A zero-length range at the end is valid; one past the end is invalid.
+When decoding guest pointers from scalar arguments, preserve their unsigned
+value (for example, `Value.unsigned`) rather than performing wrapping arithmetic
+in the embedder first.
+
+To return scalar results and memory effects together, supply a list of
+`HostMemoryWrite` records to `resumeHostCallWithMemory`:
+
+```lean
+let write : Wasm.HostMemoryWrite :=
+  { memoryIndex := 0, offset := 4, bytes := #[42, 43, 44] }
+match Wasm.resumeHostCallWithMemory call [.i32 3] [write] with
+| .ok resumed =>
+  let continued := Wasm.runUntilHost 100 resumed
+  ...
+| .error error => ...
+```
+
+Each record names a caller-relative memory index, byte offset, and byte array.
+Writes are staged in a private immutable store in list order. Later writes win
+where ranges overlap, including when different module indices alias one store
+memory. All writes must pass bounds and lookup checks. Result arity/types are
+checked against the staged store, and only a completely successful reply
+returns a changed configuration. Errors never return partially applied writes;
+the original pending call and its memory snapshot remain reusable.
+
+Read errors distinguish `.unknownMemory index` (no such caller memory),
+`.missingMemory address` (the mapping points outside the store), and
+`.outOfBounds index offset count`. Write replies wrap those as
+`HostMemoryReplyError.memory`; signature/result failures use
+`HostMemoryReplyError.reply` with the existing `HostReplyError` cases. Memory
+checks precede result checks, so an invalid memory effect is reported first.
+Unsupported signatures are rejected before processing effects.
+
+The implementation cannot grow or allocate memories, change their types or
+lengths, or modify any other store component. It preserves the saved execution
+context and the existing tail-call behavior. Memory reads perform no effects
+and do not consume execution fuel; applying host effects does not consume
+ordinary-step fuel either. This interface supports successful scalar returns
+with writes. To report a host trap, use the existing `.trap` reply, which retains
+the original store. Write-and-trap replies and host-thrown guest exceptions are
+not currently offered.
+
+`Wasm/HostMemoryTests.lean` exercises an imported buffer-filling function inside
+a nested Wasm function: the host writes bytes and the resumed guest reads them
+through ordinary Wasm loads. Tests also cover multiple memories, aliases,
+overlapping writes, tail calls, invalid ranges/results, large offsets/lengths,
+and retries after rejection.
+
 ## Embedder responsibilities and limits
 
 The current boundary supports `i32`, `i64`, `f32`, and `f64` parameters/results,
@@ -72,11 +137,12 @@ checker; an inconclusive check does not manufacture a host request. Floating
 values are transported as bits; this API does not add floating-point arithmetic
 to the certified evaluator.
 
-Host replies leave the **entire store unchanged**. The embedder can inspect
+`resumeHostCall` leaves the **entire store unchanged**. The embedder can inspect
 `call.source.store` and use `call.request.caller.module` to resolve the calling
-instance's memories and resources. Store mutation, reference-valued replies,
-allocation, and host-thrown guest exceptions are future extensions. There is no
-resulting-store argument and no certification of arbitrary external store edits.
+instance's memories and resources. `resumeHostCallWithMemory` permits the checked
+byte writes described above. Reference-valued replies, allocation, general store
+mutation, and host-thrown guest exceptions remain future extensions. Neither
+interface accepts arbitrary replacement stores.
 
 A host-side error or unrecognized identifier is an embedder decision: retain the
 request while reporting/retrying externally, terminate the embedding computation,
@@ -115,6 +181,27 @@ relation on the observable requests/replies to model permitted host behavior.
 into one such mixed trace.
 These results establish correspondence to the explicit boundary semantics;
 they do not certify external IO effects or assert full Wasm type safety.
+
+`HostMemoryAccess`, `HostMemoryRead`, and `HostMemoryEffects` independently
+specify accessible ranges, read contents, and ordered memory writes.
+`HostMemoryBoundaryStep` treats those writes as host-function effects, separate
+from `ConfigStep`. `readHostMemory_sound` and `resumeHostCallWithMemory_sound`
+prove correspondence to those relations. Successful writes preserve memory
+types and sizes (`HostMemoryEffects.shape`), `MemoryInst.Valid` assuming it held
+initially (`memories_valid`), and every non-memory store component
+(`other_components`). Existing runtime value/argument typing is also preserved.
+`bytes_outside` proves all bytes outside the selected ranges remain unchanged,
+including across aliasing and multiple writes; `unwritten_memory` retains whole
+memories that no write selects.
+
+`resumeHostCallWithMemory_spec` identifies the effects and the exact saved frame
+and continuation used by successful resumption.
+`resumeHostCallWithMemory_bytes_outside` exposes the byte-preservation guarantee
+directly for executable replies. `runUntilHost_resume_memory_sound` connects a
+runner suspension and an effectful reply through `HostMemoryExecutionSteps`.
+The old boundary and its store-preservation proofs remain unchanged;
+`resumeHostCallWithMemory_empty` proves that an empty write list behaves like
+the original scalar-reply operation (with errors wrapped in the new error type).
 
 Existing `Invokes`, `ConfigStep`, `stepConfiguration`, and `runConfiguration`
 are unchanged. Existing callers retain their previous behavior, including
